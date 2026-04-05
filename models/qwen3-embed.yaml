@@ -1,0 +1,6 @@
+name: qwen3-embed
+backend: llama-cpp
+embeddings: true
+context_size: 8192
+parameters:
+  model: qwen3-embedding-0.6b-q4_k_m.gguf

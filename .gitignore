@@ -1,0 +1,47 @@
+# GopherNotebook .gitignore
+
+# ─── OS & IDE Files ───
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# ─── Data & Persistence ───
+# Ignore all uploaded PDFs, parsed DB arrays, and local JSON config overrides
+backend/data/
+docker_volumes/
+
+# ─── Local AI Models ───
+# Exclude GGUF multi-gigabyte models from git to prevent repository bloat
+models/*.gguf
+models/*.bin
+
+# ─── Backend (Go) ───
+# Ignore compiled binaries
+backend/bin/
+backend/server
+*.exe
+*.test
+*.prof
+
+# ─── Frontend (Next.js) ───
+frontend/node_modules/
+frontend/.next/
+frontend/out/
+frontend/build/
+frontend/.pnp
+frontend/.pnp.js
+frontend/.env.local
+frontend/.env.development.local
+frontend/.env.test.local
+frontend/.env.production.local
+frontend/npm-debug.log*
+frontend/yarn-debug.log*
+frontend/yarn-error.log*
+frontend/.vercel
+
+# ─── Miscellaneous ───
+*.log
+.env

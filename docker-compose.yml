@@ -1,0 +1,72 @@
+services:
+  # ─── Embedding Service (LocalAI with llama-cpp backend) ───
+  local-ai:
+    image: localai/localai:latest-cpu
+    container_name: gophernotebook-localai
+    ports:
+      - "8081:8080"
+    volumes:
+      - ./models:/models
+    environment:
+      MODELS_PATH: /models
+      DEBUG: "true"
+      THREADS: "4"
+      CONTEXT_SIZE: "8192"
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8080/readyz"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 120s
+    restart: unless-stopped
+
+  # ─── Reranker Service (llama.cpp server with pooling rank) ───
+  llama-reranker:
+    image: ghcr.io/ggml-org/llama.cpp:server
+    container_name: gophernotebook-reranker
+    ports:
+      - "8082:8080"
+    volumes:
+      - ./models:/models:ro
+    command: >
+      --model /models/Qwen3-Reranker-0.6B.Q4_K_M.gguf
+      --port 8080
+      --host 0.0.0.0
+      --pooling rank
+      --reranking
+      --ctx-size 512
+      --threads 4
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8080/health"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 60s
+    restart: unless-stopped
+
+  # ─── Vector Database (Weaviate with Hybrid Search) ───
+  weaviate:
+    image: cr.weaviate.io/semitechnologies/weaviate:1.28.4
+    container_name: gophernotebook-weaviate
+    ports:
+      - "8080:8080"
+      - "50051:50051"
+    environment:
+      QUERY_DEFAULTS_LIMIT: "25"
+      AUTHENTICATION_ANONYMOUS_ACCESS_ENABLED: "true"
+      PERSISTENCE_DATA_PATH: /var/lib/weaviate
+      DEFAULT_VECTORIZER_MODULE: none
+      CLUSTER_HOSTNAME: node1
+      ENABLE_MODULES: ""
+    volumes:
+      - weaviate_data:/var/lib/weaviate
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8080/v1/.well-known/ready"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+    restart: unless-stopped
+
+volumes:
+  weaviate_data:
