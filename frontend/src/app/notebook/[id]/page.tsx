@@ -37,6 +37,29 @@ type Message = {
   citations?: { fileName: string; pageNumber: number; snippet: string; index: number }[];
 };
 
+const AVAILABLE_MODELS: Record<string, {id: string; name: string}[]> = {
+  openai: [
+    { id: "gpt-4o", name: "GPT-4o (Default)" },
+    { id: "gpt-4o-mini", name: "GPT-4o Mini" },
+    { id: "gpt-4-turbo", name: "GPT-4 Turbo" },
+    { id: "o1-preview", name: "o1 Preview" },
+    { id: "o1-mini", name: "o1 Mini" },
+  ],
+  google: [
+    { id: "gemini-2.5-flash", name: "Gemini 2.5 Flash" },
+    { id: "gemini-2.0-pro-exp-02-05", name: "Gemini 2.0 Pro Experimental" },
+    { id: "gemini-2.0-flash", name: "Gemini 2.0 Flash (Default)" },
+    { id: "gemini-1.5-pro", name: "Gemini 1.5 Pro" },
+    { id: "gemini-1.5-flash", name: "Gemini 1.5 Flash" },
+  ],
+  anthropic: [
+    { id: "claude-3-7-sonnet-20250219", name: "Claude 3.7 Sonnet (Default)" },
+    { id: "claude-3-5-sonnet-20241022", name: "Claude 3.5 Sonnet" },
+    { id: "claude-3-5-haiku-20241022", name: "Claude 3.5 Haiku" },
+    { id: "claude-3-opus-20240229", name: "Claude 3 Opus" },
+  ]
+};
+
 export default function NotebookWorkspace({ params }: { params: Promise<{ id: string }> }) {
   const resolvedParams = use(params);
   const notebookId = resolvedParams.id;
@@ -228,7 +251,7 @@ export default function NotebookWorkspace({ params }: { params: Promise<{ id: st
       {/* Sidebar */}
       <aside className="w-80 border-r bg-card/30 flex flex-col backdrop-blur-xl shrink-0 transition-all z-10">
         <div className="p-4 border-b flex items-center gap-3">
-          <Link href="/">
+          <Link href="/dashboard">
             <Button variant="ghost" size="icon" className="shrink-0 -ml-2 hover:bg-black/5 dark:hover:bg-white/10">
               <ArrowLeft className="w-5 h-5" />
             </Button>
@@ -473,7 +496,12 @@ export default function NotebookWorkspace({ params }: { params: Promise<{ id: st
               <select 
                 className="flex h-10 w-full rounded-md border border-input bg-background/50 px-3 py-2 text-sm ring-offset-background focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
                 value={provider}
-                onChange={(e) => setProvider(e.target.value)}
+                onChange={(e) => {
+                  const newProvider = e.target.value;
+                  setProvider(newProvider);
+                  // Auto-switch to the new provider's default model
+                  setModel(AVAILABLE_MODELS[newProvider]?.[0]?.id || "");
+                }}
               >
                 <option value="openai">OpenAI</option>
                 <option value="google">Google (Gemini)</option>
@@ -491,13 +519,17 @@ export default function NotebookWorkspace({ params }: { params: Promise<{ id: st
               />
             </div>
             <div className="grid gap-2">
-              <Label>Model Override (Optional)</Label>
-              <Input 
-                value={model} 
-                onChange={(e) => setModel(e.target.value)} 
-                placeholder="e.g. gpt-4o" 
-                className="bg-background/50"
-              />
+              <Label>Model</Label>
+              <select 
+                className="flex h-10 w-full rounded-md border border-input bg-background/50 px-3 py-2 text-sm ring-offset-background focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                value={model}
+                onChange={(e) => setModel(e.target.value)}
+              >
+                <option value="">Backend Default</option>
+                {AVAILABLE_MODELS[provider]?.map((m) => (
+                  <option key={m.id} value={m.id}>{m.name}</option>
+                ))}
+              </select>
             </div>
           </div>
           <DialogFooter>

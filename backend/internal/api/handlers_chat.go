@@ -43,7 +43,7 @@ func (s *Server) Chat(c *gin.Context) {
 		case "google", "gemini":
 			model = "gemini-2.0-flash"
 		case "anthropic":
-			model = "claude-sonnet-4-20250514"
+			model = "claude-3-7-sonnet-20250219"
 		}
 	}
 
