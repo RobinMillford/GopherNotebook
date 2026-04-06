@@ -9,7 +9,8 @@ Thumbs.db
 *.swo
 
 # ─── Data & Persistence ───
-# Ignore all uploaded PDFs, parsed DB arrays, and local JSON config overrides
+# Ignore all uploaded PDFs, parsed DB arrays, Docker volumes, and local JSON config overrides
+data/
 backend/data/
 docker_volumes/
 

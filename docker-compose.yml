@@ -7,6 +7,7 @@ services:
       - "8081:8080"
     volumes:
       - ./models:/models
+      - ./data/localai:/build/models
     environment:
       MODELS_PATH: /models
       DEBUG: "true"
@@ -59,7 +60,7 @@ services:
       CLUSTER_HOSTNAME: node1
       ENABLE_MODULES: ""
     volumes:
-      - weaviate_data:/var/lib/weaviate
+      - ./data/weaviate:/var/lib/weaviate
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:8080/v1/.well-known/ready"]
       interval: 15s
@@ -67,6 +68,3 @@ services:
       retries: 5
       start_period: 30s
     restart: unless-stopped
-
-volumes:
-  weaviate_data:
