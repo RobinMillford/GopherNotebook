@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"log"
+	"time"
 
 	"github.com/weaviate/weaviate-go-client/v4/weaviate"
 )
@@ -20,15 +21,24 @@ func NewWeaviateClient(host, scheme string) (*weaviate.Client, error) {
 		return nil, fmt.Errorf("failed to create weaviate client: %w", err)
 	}
 
-	// Verify connectivity
-	ready, err := client.Misc().ReadyChecker().Do(context.Background())
+	// Verify connectivity with simple backoff
+	var ready bool
+	for i := 0; i < 15; i++ {
+		ready, err = client.Misc().ReadyChecker().Do(context.Background())
+		if err == nil && ready {
+			break
+		}
+		log.Printf("Waiting for Weaviate to become ready (attempt %d/15)...", i+1)
+		time.Sleep(2 * time.Second)
+	}
+
 	if err != nil {
 		return nil, fmt.Errorf("weaviate readiness check failed: %w", err)
 	}
 	if !ready {
-		return nil, fmt.Errorf("weaviate is not ready")
+		return nil, fmt.Errorf("weaviate is not ready after multiple attempts")
 	}
 
-	log.Println("✓ Connected to Weaviate at", scheme+"://"+host)
+	log.Println("✓ Connected to Weaviate successfully.")
 	return client, nil
 }

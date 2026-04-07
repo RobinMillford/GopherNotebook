@@ -9,9 +9,9 @@ import (
 	"github.com/tmc/langchaingo/llms/anthropic"
 	"github.com/tmc/langchaingo/llms/googleai"
 	"github.com/tmc/langchaingo/llms/openai"
-	"github.com/yamin/gophernotebook/internal/retrieve"
+        "github.com/yamin/gophernotebook/internal/retrieve"
+        "github.com/yamin/gophernotebook/internal/notebook"
 )
-
 // Citation represents a specific source reference in the response.
 type Citation struct {
 	FileName   string `json:"fileName"`
@@ -45,6 +45,7 @@ func (g *Generator) GenerateStream(
 	provider string,
 	apiKey string,
 	model string,
+        messages []notebook.Message,
 	streamFn func(StreamChunk),
 ) error {
 	// Build the LLM client based on provider
@@ -54,7 +55,7 @@ func (g *Generator) GenerateStream(
 	}
 
 	// Build the prompt with context and citation instructions
-	prompt := buildPrompt(query, chunks)
+	prompt := buildPrompt(query, chunks, messages)
 
 	// Build citations from the context chunks
 	citations := buildCitations(chunks)
@@ -86,11 +87,16 @@ func (g *Generator) GenerateStream(
 // createLLM creates the appropriate langchaingo LLM client.
 func (g *Generator) createLLM(provider, apiKey, model string) (llms.Model, error) {
 	switch strings.ToLower(provider) {
-	case "openai":
+	case "openai", "groq", "openrouter":
 		opts := []openai.Option{openai.WithToken(apiKey)}
 		if model != "" {
 			opts = append(opts, openai.WithModel(model))
 		}
+                if strings.ToLower(provider) == "groq" {
+                        opts = append(opts, openai.WithBaseURL("https://api.groq.com/openai/v1"))
+                } else if strings.ToLower(provider) == "openrouter" {
+                        opts = append(opts, openai.WithBaseURL("https://openrouter.ai/api/v1"))
+                }
 		return openai.New(opts...)
 	case "google", "gemini":
 		return googleai.New(ctx(context.Background()), googleai.WithAPIKey(apiKey), googleai.WithDefaultModel(model))
@@ -106,12 +112,19 @@ func (g *Generator) createLLM(provider, apiKey, model string) (llms.Model, error
 }
 
 // buildPrompt constructs the system + user prompt with context chunks.
-func buildPrompt(query string, chunks []retrieve.RetrievedChunk) string {
+func buildPrompt(query string, chunks []retrieve.RetrievedChunk, messages []notebook.Message) string {
 	var sb strings.Builder
 
 	sb.WriteString("You are a helpful research assistant. Answer the user's question based ONLY on the provided source documents. ")
 	sb.WriteString("If the answer cannot be found in the sources, say so clearly. ")
 	sb.WriteString("When referencing information, cite the source using [Source N] notation where N is the source number.\n\n")
+        if len(messages) > 0 {
+                sb.WriteString("=== CHAT HISTORY ===\n")
+                for _, m := range messages {
+                        sb.WriteString(fmt.Sprintf("%s: %s\n", strings.ToUpper(m.Role), m.Content))
+                }
+                sb.WriteString("\n")
+        }
 
 	sb.WriteString("=== SOURCE DOCUMENTS ===\n\n")
 	for i, chunk := range chunks {

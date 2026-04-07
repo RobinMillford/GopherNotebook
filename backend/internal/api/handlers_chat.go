@@ -6,10 +6,11 @@ import (
 	"net/http"
 	"time"
 
+	"github.com/google/uuid"
 	"github.com/gin-gonic/gin"
 	"github.com/yamin/gophernotebook/internal/generate"
+	"github.com/yamin/gophernotebook/internal/notebook"
 )
-
 // ChatRequest is the JSON body for a chat request.
 type ChatRequest struct {
 	Query string `json:"query" binding:"required"`
@@ -74,16 +75,35 @@ func (s *Server) Chat(c *gin.Context) {
 		}
 	}
 
+	// Load history
+	messages, _ := s.nbManager.GetMessages(notebookID)
+
 	// Set SSE headers
 	c.Writer.Header().Set("Content-Type", "text/event-stream")
 	c.Writer.Header().Set("Cache-Control", "no-cache")
 	c.Writer.Header().Set("Connection", "keep-alive")
 	c.Writer.Header().Set("X-Accel-Buffering", "no")
 
+	// Save user message to history
+	userMsg := notebook.Message{
+		ID:        "u_" + uuid.New().String(),
+		Role:      "user",
+		Content:   req.Query,
+		CreatedAt: time.Now(),
+	}
+	_ = s.nbManager.SaveMessage(notebookID, userMsg)
+
 	// Stream the LLM response
 	c.Stream(func(w io.Writer) bool {
-		err := s.generator.GenerateStream(ctx, req.Query, rerankedResults, provider, apiKey, model,
+		var fullResponse string
+		var finalCitations interface{}
+
+		err := s.generator.GenerateStream(ctx, req.Query, rerankedResults, provider, apiKey, model, messages,
 			func(chunk generate.StreamChunk) {
+				fullResponse += chunk.Content
+				if len(chunk.Citations) > 0 {
+					finalCitations = chunk.Citations
+				}
 				data, _ := json.Marshal(chunk)
 				c.SSEvent("message", string(data))
 				c.Writer.Flush()
@@ -94,10 +114,21 @@ func (s *Server) Chat(c *gin.Context) {
 				Content: "\n\n[Error: " + err.Error() + "]",
 				Done:    true,
 			}
+			fullResponse += errChunk.Content
 			data, _ := json.Marshal(errChunk)
 			c.SSEvent("message", string(data))
 			c.Writer.Flush()
 		}
+
+		// Save assistant message to history
+		asstMsg := notebook.Message{
+			ID:        "a_" + uuid.New().String(),
+			Role:      "assistant",
+			Content:   fullResponse,
+			Citations: finalCitations,
+			CreatedAt: time.Now(),
+		}
+		_ = s.nbManager.SaveMessage(notebookID, asstMsg)
 
 		return false
 	})

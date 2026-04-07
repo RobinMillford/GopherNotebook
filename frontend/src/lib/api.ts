@@ -20,6 +20,7 @@ export interface Source {
 
 export interface NotebookDetail extends Notebook {
   sources: Source[];
+  messages?: any[];
 }
 
 export interface IngestProgress {

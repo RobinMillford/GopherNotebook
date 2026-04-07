@@ -24,8 +24,17 @@ type Source struct {
 	Error      string    `json:"error,omitempty"`
 }
 
-// NotebookDetail is a Notebook plus its list of sources.
+// Message represents a single conversational turn in the chat.
+type Message struct {
+	ID        string      `json:"id"`
+	Role      string      `json:"role"` // "user" or "assistant"
+	Content   string      `json:"content"`
+	Citations interface{} `json:"citations,omitempty"` // interface{} to avoid circular deps with generate.Citation
+	CreatedAt time.Time   `json:"createdAt"`
+}
+
+// NotebookDetail is a Notebook plus its list of sources and messages.
 type NotebookDetail struct {
 	Notebook
-	Sources []Source `json:"sources"`
-}
+	Sources  []Source  `json:"sources"`
+	Messages []Message `json:"messages"`}

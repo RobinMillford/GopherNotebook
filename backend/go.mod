@@ -5,10 +5,10 @@ go 1.25.0
 require (
 	github.com/gin-gonic/gin v1.12.0
 	github.com/google/uuid v1.6.0
-	github.com/tmc/langchaingo v0.1.13
+	github.com/tmc/langchaingo v0.1.14
 	github.com/tsawler/tabula v1.6.6
-	github.com/weaviate/weaviate v1.27.6
-	github.com/weaviate/weaviate-go-client/v4 v4.13.1
+	github.com/weaviate/weaviate v1.29.0
+	github.com/weaviate/weaviate-go-client/v4 v4.16.1
 )
 
 require (
@@ -93,3 +93,5 @@ require (
 	google.golang.org/protobuf v1.36.10 // indirect
 	gopkg.in/yaml.v3 v3.0.1 // indirect
 )
+
+replace github.com/weaviate/weaviate => github.com/weaviate/weaviate v1.26.2

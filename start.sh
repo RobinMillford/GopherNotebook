@@ -129,7 +129,13 @@ else
     exit 1
 fi
 
-# 3. Start Core Infrastructure (Docker Compose)
+# 3. Free ports before starting (kill any stale processes)
+echo -e "${YELLOW}Freeing ports 8090 and 3000...${NC}"
+fuser -k 8090/tcp 2>/dev/null || true
+fuser -k 3000/tcp 2>/dev/null || true
+sleep 1
+
+# 4. Start Core Infrastructure (Docker Compose)
 echo -e "${YELLOW}Starting core infrastructure (Weaviate & LocalAI)...${NC}"
 $DOCKER_COMPOSE_CMD up -d
 
@@ -152,7 +158,7 @@ cleanup() {
 
 trap cleanup SIGINT SIGTERM EXIT
 
-# 4. Start Go Backend
+# 5. Start Go Backend
 echo -e "${YELLOW}Starting Go Backend (http://localhost:8090)...${NC}"
 cd backend
 go mod tidy
@@ -160,7 +166,7 @@ go run ./cmd/server > server.log 2>&1 &
 BACKEND_PID=$!
 cd ..
 
-# 5. Start Next.js Frontend
+# 6. Start Next.js Frontend
 echo -e "${YELLOW}Starting Next.js Frontend (http://localhost:3000)...${NC}"
 cd frontend
 if [ ! -d "node_modules" ]; then

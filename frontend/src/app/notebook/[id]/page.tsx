@@ -4,10 +4,12 @@ import { useEffect, useRef, useState, use } from "react";
 import Link from "next/link";
 import { 
   ArrowLeft, Upload, FileText, Settings, Send, Bot, User, 
-  Loader2, Trash2, CheckCircle2, AlertCircle, Key, Sparkles
+  Loader2, Trash2, CheckCircle2, AlertCircle, Key, Sparkles, Download, Copy, Check, Eye, EyeOff
 } from "lucide-react";
 import { motion, AnimatePresence } from "framer-motion";
 import { formatDistanceToNow } from "date-fns";
+import ReactMarkdown from 'react-markdown';
+import remarkGfm from 'remark-gfm';
 
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -57,7 +59,20 @@ const AVAILABLE_MODELS: Record<string, {id: string; name: string}[]> = {
     { id: "claude-3-5-sonnet-20241022", name: "Claude 3.5 Sonnet" },
     { id: "claude-3-5-haiku-20241022", name: "Claude 3.5 Haiku" },
     { id: "claude-3-opus-20240229", name: "Claude 3 Opus" },
-  ]
+  ],
+  groq: [
+    { id: "llama-3.3-70b-versatile", name: "Llama 3.3 70B Versatile" },
+    { id: "llama-3.1-8b-instant", name: "Llama 3.1 8B Instant" },
+    { id: "mixtral-8x7b-32768", name: "Mixtral 8x7B" },
+    { id: "gemma2-9b-it", name: "Gemma 2 9B IT" },
+  ],
+  openrouter: [
+    { id: "anthropic/claude-3.7-sonnet", name: "Claude 3.7 Sonnet (OpenRouter)" },
+    { id: "anthropic/claude-3.5-sonnet", name: "Claude 3.5 Sonnet (OpenRouter)" },
+    { id: "google/gemini-2.5-flash", name: "Gemini 2.5 Flash (OpenRouter)" },
+    { id: "meta-llama/llama-3.3-70b-instruct", name: "Llama 3.3 70B (OpenRouter)" },
+    { id: "openai/o3-mini", name: "o3 Mini (OpenRouter)" },
+  ],
 };
 
 export default function NotebookWorkspace({ params }: { params: Promise<{ id: string }> }) {
@@ -83,6 +98,12 @@ export default function NotebookWorkspace({ params }: { params: Promise<{ id: st
   const [provider, setProvider] = useState("openai");
   const [apiKey, setApiKey] = useState("");
   const [model, setModel] = useState("");
+  
+  // Dynamic Models
+  const [dynamicModels, setDynamicModels] = useState<{id: string, name: string}[]>([]);
+  const [loadingModels, setLoadingModels] = useState(false);
+  const [showApiKey, setShowApiKey] = useState(false);
+  const [modelSearch, setModelSearch] = useState("");
 
   useEffect(() => {
     // Load from local storage
@@ -92,10 +113,36 @@ export default function NotebookWorkspace({ params }: { params: Promise<{ id: st
     setProvider(storedProvider);
     setApiKey(storedKey);
     setModel(storedModel);
+    
+    if (storedKey) {
+      fetchDynamicModels(storedProvider, storedKey);
+    }
 
     loadData();
     setupSSE();
   }, [notebookId]);
+
+  const fetchDynamicModels = async (currentProvider: string, currentApiKey: string) => {
+    if (!currentApiKey.trim()) return;
+    setLoadingModels(true);
+    try {
+      const res = await fetch("/api/models", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ provider: currentProvider, apiKey: currentApiKey })
+      });
+      if (res.ok) {
+        const data = await res.json();
+        if (data && data.models) {
+          setDynamicModels(data.models);
+        }
+      }
+    } catch (e) {
+      console.error("Failed to load models list", e);
+    } finally {
+      setLoadingModels(false);
+    }
+  };
 
   useEffect(() => {
     // Auto-scroll chat
@@ -106,6 +153,9 @@ export default function NotebookWorkspace({ params }: { params: Promise<{ id: st
     try {
       const data = await getNotebook(notebookId);
       setNotebook(data);
+      if (data && data.messages) {
+        setMessages(data.messages);
+      }
     } catch (error) {
       toast.error("Failed to load notebook");
     } finally {
@@ -374,35 +424,46 @@ export default function NotebookWorkspace({ params }: { params: Promise<{ id: st
                       <p className="whitespace-pre-wrap">{msg.content}</p>
                     ) : (
                       <div className="prose prose-sm dark:prose-invert max-w-none prose-p:leading-relaxed prose-pre:bg-black/5 dark:prose-pre:bg-white/5">
-                        {/* Process simple markdown or just split by paragraphs */}
-                        {msg.content.split('\n').map((line, i) => (
-                           <p key={i} className="mb-2 min-h-4">
-                             {/* Very basic citation formatter [Source 1] */}
-                             {line.split(/(\[Source \d+\])/g).map((part, j) => {
-                               const match = part.match(/\[Source (\d+)\]/);
-                               if (match && msg.citations) {
-                                 const idx = parseInt(match[1]) - 1;
-                                 const cite = msg.citations.find(c => c.index === idx + 1);
-                                 if (cite) {
-                                   return (
-                                     <Tooltip key={j}>
-                                       <TooltipTrigger>
-                                         <Badge variant="outline" className="ml-1 cursor-pointer hover:bg-primary/10 text-[10px] h-5 align-middle border-primary/30 text-primary">
-                                           {match[1]}
-                                         </Badge>
-                                       </TooltipTrigger>
-                                       <TooltipContent className="max-w-xs p-3 glass">
-                                         <p className="font-semibold text-xs mb-1 mb-1">{cite.fileName} (Page {cite.pageNumber})</p>
-                                         <p className="text-xs text-muted-foreground line-clamp-4 italic">"{cite.snippet}"</p>
-                                       </TooltipContent>
-                                     </Tooltip>
-                                   );
-                                 }
-                               }
-                               return <span key={j}>{part}</span>;
-                             })}
-                           </p>
-                        ))}
+                        <ReactMarkdown
+                          remarkPlugins={[remarkGfm]}
+                          components={{
+                            a: ({ node, href, children, ...props }) => {
+                              const match = href?.match(/^#citation-(\d+)$/);
+                              if (match && msg.citations) {
+                                const citeIdx = parseInt(match[1]) - 1;
+                                const cite = msg.citations.find(c => c.index === citeIdx + 1);
+                                if (cite) {
+                                  return (
+                                    <Tooltip>
+                                      <TooltipTrigger>
+                                        <Badge variant="outline" className="mx-1 cursor-pointer hover:bg-primary/10 text-[10px] h-5 align-middle border-primary/30 text-primary shadow-sm hover:shadow transition-all">
+                                          {match[1]}
+                                        </Badge>
+                                      </TooltipTrigger>
+                                      <TooltipContent className="max-w-xs p-3 glass">
+                                        <p className="font-semibold text-xs mb-1">{cite.fileName} (Page {cite.pageNumber})</p>
+                                        <p className="text-xs text-muted-foreground line-clamp-4 italic">"{cite.snippet}"</p>
+                                      </TooltipContent>
+                                    </Tooltip>
+                                  );
+                                }
+                              }
+                              return (
+                                <a
+                                  {...props}
+                                  href={href}
+                                  className="text-primary hover:underline underline-offset-4"
+                                  target="_blank"
+                                  rel="noopener noreferrer"
+                                >
+                                  {children}
+                                </a>
+                              );
+                            }
+                          }}
+                        >
+                          {msg.content.replace(/\[Source (\d+)\]/g, '[$1](#citation-$1)')}
+                        </ReactMarkdown>
                         
                         {msg.citations && msg.citations.length > 0 && (
                           <div className="mt-6 pt-4 border-t border-border/50">
@@ -479,62 +540,198 @@ export default function NotebookWorkspace({ params }: { params: Promise<{ id: st
       </main>
 
       {/* Settings Dialog */}
-      <Dialog open={settingsOpen} onOpenChange={setSettingsOpen}>
-        <DialogContent className="sm:max-w-[425px] glass">
-          <DialogHeader>
+      <Dialog open={settingsOpen} onOpenChange={(open) => {
+        if (!open) {
+          localStorage.setItem("gn_provider", provider);
+          localStorage.setItem("gn_api_key", apiKey);
+          localStorage.setItem("gn_model", model);
+        }
+        setSettingsOpen(open);
+      }}>
+        <DialogContent className="sm:max-w-[480px] glass max-h-[90vh] flex flex-col p-0 gap-0">
+          <DialogHeader className="px-6 pt-6 pb-4 border-b shrink-0">
             <DialogTitle className="flex items-center gap-2">
               <Key className="w-5 h-5 text-primary" />
-              LLM API Configuration
+              LLM Configuration
             </DialogTitle>
-            <DialogDescription>
-              Weaviate and LocalAI Embedding/Reranking are local. The final generation requires an LLM provider. Keys are saved locally.
+            <DialogDescription className="text-xs">
+              Keys stored in your browser only. Embedding &amp; reranking stay local.
             </DialogDescription>
           </DialogHeader>
-          <div className="grid gap-5 py-4">
+
+          <div className="flex flex-col gap-5 px-6 py-5 overflow-y-auto flex-1">
+            {/* Provider pills */}
             <div className="grid gap-2">
-              <Label>Provider</Label>
-              <select 
-                className="flex h-10 w-full rounded-md border border-input bg-background/50 px-3 py-2 text-sm ring-offset-background focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
-                value={provider}
-                onChange={(e) => {
-                  const newProvider = e.target.value;
-                  setProvider(newProvider);
-                  // Auto-switch to the new provider's default model
-                  setModel(AVAILABLE_MODELS[newProvider]?.[0]?.id || "");
-                }}
-              >
-                <option value="openai">OpenAI</option>
-                <option value="google">Google (Gemini)</option>
-                <option value="anthropic">Anthropic</option>
-              </select>
-            </div>
-            <div className="grid gap-2">
-              <Label>API Key</Label>
-              <Input 
-                type="password" 
-                value={apiKey} 
-                onChange={(e) => setApiKey(e.target.value)} 
-                placeholder="sk-..." 
-                className="bg-background/50"
-              />
-            </div>
-            <div className="grid gap-2">
-              <Label>Model</Label>
-              <select 
-                className="flex h-10 w-full rounded-md border border-input bg-background/50 px-3 py-2 text-sm ring-offset-background focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
-                value={model}
-                onChange={(e) => setModel(e.target.value)}
-              >
-                <option value="">Backend Default</option>
-                {AVAILABLE_MODELS[provider]?.map((m) => (
-                  <option key={m.id} value={m.id}>{m.name}</option>
+              <Label className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">Provider</Label>
+              <div className="flex flex-wrap gap-2">
+                {[
+                  { value: "openai", label: "OpenAI" },
+                  { value: "google", label: "Gemini" },
+                  { value: "anthropic", label: "Anthropic" },
+                  { value: "groq", label: "Groq" },
+                  { value: "openrouter", label: "OpenRouter" },
+                ].map((p) => (
+                  <button
+                    key={p.value}
+                    onClick={() => {
+                      setProvider(p.value);
+                      setDynamicModels([]);
+                      setModel("");
+                      if (apiKey) fetchDynamicModels(p.value, apiKey);
+                    }}
+                    className={`px-3 py-1.5 rounded-full text-sm font-medium transition-all border ${
+                      provider === p.value
+                        ? "bg-primary text-primary-foreground border-primary shadow-sm shadow-primary/30"
+                        : "bg-background/50 text-muted-foreground border-border hover:border-primary/50 hover:text-foreground"
+                    }`}
+                  >
+                    {p.label}
+                  </button>
                 ))}
-              </select>
+              </div>
+            </div>
+
+            {/* API Key */}
+            <div className="grid gap-2">
+              <div className="flex items-center justify-between">
+                <Label className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">API Key</Label>
+                {apiKey && (
+                  <button
+                    onClick={() => fetchDynamicModels(provider, apiKey)}
+                    disabled={loadingModels}
+                    className="text-xs text-primary hover:underline disabled:opacity-50 flex items-center gap-1"
+                  >
+                    {loadingModels ? (
+                      <><Loader2 className="w-3 h-3 animate-spin" /> Loading models...</>
+                    ) : (
+                      "↻ Refresh models"
+                    )}
+                  </button>
+                )}
+              </div>
+              <div className="relative">
+                <Input
+                  type={showApiKey ? "text" : "password"}
+                  value={apiKey}
+                  onChange={(e) => setApiKey(e.target.value)}
+                  onBlur={() => { if (apiKey) fetchDynamicModels(provider, apiKey); }}
+                  placeholder={provider === "openrouter" ? "sk-or-..." : provider === "groq" ? "gsk_..." : "sk-..."}
+                  className="bg-background/50 pr-10 font-mono text-sm"
+                />
+                <Button
+                  type="button" variant="ghost" size="icon"
+                  className="absolute right-0 top-0 h-10 w-10 text-muted-foreground hover:text-foreground"
+                  onClick={() => setShowApiKey(!showApiKey)}
+                >
+                  {showApiKey ? <EyeOff className="h-4 w-4" /> : <Eye className="h-4 w-4" />}
+                </Button>
+              </div>
+              {apiKey && (
+                <p className="text-[10px] text-muted-foreground flex items-center gap-1">
+                  <CheckCircle2 className="w-3 h-3 text-green-500" />
+                  Key saved — ends in …{apiKey.slice(-4)}
+                </p>
+              )}
+            </div>
+
+            {/* Model Picker */}
+            <div className="grid gap-2">
+              <div className="flex items-center justify-between">
+                <Label className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">Model</Label>
+                <span className="text-[10px] text-muted-foreground">
+                  {dynamicModels.length > 0 ? (
+                    <span className="text-green-500 font-medium">● {dynamicModels.length} live models</span>
+                  ) : (
+                    <span className="text-yellow-500 font-medium">● static defaults</span>
+                  )}
+                </span>
+              </div>
+
+              {/* Search */}
+              <div className="relative">
+                <Input
+                  type="text"
+                  placeholder="Search models…"
+                  value={modelSearch}
+                  onChange={(e) => setModelSearch(e.target.value)}
+                  className="bg-background/50 h-9 pl-8 text-sm"
+                  disabled={loadingModels}
+                />
+                <svg className="absolute left-2.5 top-2.5 w-4 h-4 text-muted-foreground" fill="none" stroke="currentColor" strokeWidth={2} viewBox="0 0 24 24"><circle cx="11" cy="11" r="8" /><path d="m21 21-4.35-4.35" /></svg>
+              </div>
+
+              {/* Model cards */}
+              <div className="rounded-xl border border-border/60 overflow-hidden">
+                {loadingModels ? (
+                  <div className="flex items-center justify-center gap-2 py-8 text-sm text-muted-foreground">
+                    <Loader2 className="w-4 h-4 animate-spin" /> Fetching latest models…
+                  </div>
+                ) : (
+                  <div className="divide-y divide-border/40 max-h-[240px] overflow-y-auto">
+                    {/* Backend default option */}
+                    <button
+                      onClick={() => setModel("")}
+                      className={`w-full text-left px-4 py-3 transition-all flex items-center justify-between gap-3 group ${
+                        model === ""
+                          ? "bg-primary/10 text-primary"
+                          : "hover:bg-muted/50 text-muted-foreground hover:text-foreground"
+                      }`}
+                    >
+                      <div>
+                        <p className="text-sm font-medium">Backend Default</p>
+                        <p className="text-[10px]">Let the server decide</p>
+                      </div>
+                      {model === "" && <CheckCircle2 className="w-4 h-4 text-primary shrink-0" />}
+                    </button>
+
+                    {(dynamicModels.length > 0 ? dynamicModels : (AVAILABLE_MODELS[provider as keyof typeof AVAILABLE_MODELS] || []))
+                      .filter((m) =>
+                        modelSearch === "" ||
+                        (m.name || m.id).toLowerCase().includes(modelSearch.toLowerCase()) ||
+                        m.id.toLowerCase().includes(modelSearch.toLowerCase())
+                      )
+                      .map((m) => (
+                        <button
+                          key={m.id}
+                          onClick={() => setModel(m.id)}
+                          className={`w-full text-left px-4 py-3 transition-all flex items-center justify-between gap-3 ${
+                            model === m.id
+                              ? "bg-primary/10 text-primary"
+                              : "hover:bg-muted/50 text-foreground/80 hover:text-foreground"
+                          }`}
+                        >
+                          <div className="min-w-0">
+                            <p className="text-sm font-medium truncate">{m.name || m.id}</p>
+                            {m.name && m.name !== m.id && (
+                              <p className="text-[10px] text-muted-foreground font-mono truncate">{m.id}</p>
+                            )}
+                          </div>
+                          {model === m.id && <CheckCircle2 className="w-4 h-4 text-primary shrink-0" />}
+                        </button>
+                      ))
+                    }
+                  </div>
+                )}
+              </div>
             </div>
           </div>
-          <DialogFooter>
-            <Button onClick={saveSettings} className="w-full rounded-full">Save Configuration</Button>
-          </DialogFooter>
+
+          {/* Sticky footer with current selection summary */}
+          <div className="px-6 py-4 border-t bg-muted/30 shrink-0">
+            <div className="flex items-center gap-3 mb-3">
+              <div className="flex-1 min-w-0">
+                <p className="text-[10px] uppercase tracking-wider text-muted-foreground font-semibold mb-0.5">Currently active</p>
+                <p className="text-sm font-semibold truncate">
+                  {provider.charAt(0).toUpperCase() + provider.slice(1)}
+                  <span className="text-muted-foreground font-normal"> · </span>
+                  <span className="text-primary">{model || "Backend Default"}</span>
+                </p>
+              </div>
+            </div>
+            <Button onClick={saveSettings} className="w-full rounded-full font-semibold">
+              <CheckCircle2 className="w-4 h-4 mr-2" /> Save Configuration
+            </Button>
+          </div>
         </DialogContent>
       </Dialog>
     </div>

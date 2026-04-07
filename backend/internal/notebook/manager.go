@@ -64,9 +64,15 @@ func (m *Manager) Get(id string) (*NotebookDetail, error) {
 		sources = []Source{} // Graceful fallback
 	}
 
+	messages, err := m.GetMessages(id)
+	if err != nil {
+		messages = []Message{} // Graceful fallback
+	}
+
 	return &NotebookDetail{
 		Notebook: *nb,
 		Sources:  sources,
+		Messages: messages,
 	}, nil
 }
 
@@ -194,6 +200,52 @@ func (m *Manager) sourcesFile(id string) string {
 	return filepath.Join(m.notebookDir(id), "sources.json")
 }
 
+func (m *Manager) messagesFile(id string) string {
+	return filepath.Join(m.notebookDir(id), "messages.json")
+}
+
+// GetMessages returns the chat history for a notebook.
+func (m *Manager) GetMessages(notebookID string) ([]Message, error) {
+	data, err := os.ReadFile(m.messagesFile(notebookID))
+	if err != nil {
+		if os.IsNotExist(err) {
+			return []Message{}, nil
+		}
+		return nil, err
+	}
+
+	var messages []Message
+	if err := json.Unmarshal(data, &messages); err != nil {
+		return nil, err
+	}
+	return messages, nil
+}
+
+// SaveMessage appends a message to the notebook's chat history.
+func (m *Manager) SaveMessage(notebookID string, msg Message) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	messages, err := m.GetMessages(notebookID)
+	if err != nil {
+		messages = []Message{}
+	}
+
+	messages = append(messages, msg)
+
+	// Update notebook last updated time
+	if nb, err := m.load(notebookID); err == nil {
+		nb.UpdatedAt = time.Now()
+		_ = m.save(nb)
+	}
+
+	data, err := json.MarshalIndent(messages, "", "  ")
+	if err != nil {
+		return err
+	}
+	return os.WriteFile(m.messagesFile(notebookID), data, 0644)
+}
+
 func (m *Manager) load(id string) (*Notebook, error) {
 	data, err := os.ReadFile(m.notebookFile(id))
 	if err != nil {
@@ -242,4 +294,16 @@ func (m *Manager) saveSources(id string, sources []Source) error {
 		return err
 	}
 	return os.WriteFile(m.sourcesFile(id), data, 0644)
+}
+
+// ClearChatHistory removes the messages file
+func (m *Manager) ClearChatHistory(notebookID string) error {
+        m.mu.Lock()
+        defer m.mu.Unlock()
+        
+        file := m.messagesFile(notebookID)
+        if err := os.Remove(file); err != nil && !os.IsNotExist(err) {
+                return err
+        }
+        return nil
 }

@@ -103,3 +103,15 @@ func (s *Server) DeleteSource(c *gin.Context) {
 
 	c.JSON(http.StatusOK, gin.H{"message": "Source deleted"})
 }
+
+// ClearChatHistory deletes the chat history for a notebook
+func (s *Server) ClearChatHistory(c *gin.Context) {
+        id := c.Param("id")
+
+        if err := s.nbManager.ClearChatHistory(id); err != nil {
+                c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to clear chat history"})
+                return
+        }
+
+        c.JSON(http.StatusOK, gin.H{"message": "Chat history cleared"})
+}

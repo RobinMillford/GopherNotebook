@@ -20,12 +20,15 @@ models/*.gguf
 models/*.bin
 
 # ─── Backend (Go) ───
-# Ignore compiled binaries
+# Ignore compiled binaries and runtime logs
 backend/bin/
 backend/server
+backend/server.log
 *.exe
 *.test
 *.prof
+*.orig
+*.rej
 
 # ─── Frontend (Next.js) ───
 frontend/node_modules/
@@ -42,7 +45,17 @@ frontend/npm-debug.log*
 frontend/yarn-debug.log*
 frontend/yarn-error.log*
 frontend/.vercel
+frontend/frontend.log
+
+# ─── AI Agent Files ───
+# Instruction files created by coding agents - not part of the project source
+frontend/AGENTS.md
+frontend/CLAUDE.md
+AGENTS.md
+CLAUDE.md
 
 # ─── Miscellaneous ───
 *.log
+*.patch
+*.py~
 .env
