@@ -4,9 +4,9 @@
   <p><strong>Source-grounded RAG workspaces powered by blazingly fast Golang and local AI infrastructure.</strong></p>
 </div>
 
-GopherNotebook is an open-source, commercial-grade document intelligence platform. Stop sending your sensitive PDFs and private corporate reports to the public cloud for processing. GopherNotebook keeps your embeddings and searches 100% local, utilizing **Weaviate** and state-of-the-art **Qwen3** local models to guarantee zero data leakage during the memory generation process. 
+GopherNotebook is an open-source, commercial-grade document intelligence platform. Stop sending your sensitive PDFs and private corporate reports to the public cloud for processing. GopherNotebook keeps your embeddings and searches 100% local, utilizing **Weaviate** and state-of-the-art **Qwen3** local models to guarantee zero data leakage during the memory generation process.
 
-You control the final generation—seamlessly bring your own API key for OpenAI, Google Gemini, or Anthropic.
+You control the final generation — bring your own API key for **OpenAI, Google Gemini, Anthropic, Groq, or OpenRouter**.
 
 ---
 
@@ -14,7 +14,9 @@ You control the final generation—seamlessly bring your own API key for OpenAI,
 - **100% Local RAG Embeddings**: Your files never leave your machine during ingestion. Embeddings and reranking run entirely via local Weaviate and LocalAI models.
 - **Blazing Fast Golang**: Built on Go, the backend handles large document chunking and concurrent hybrid searches at sub-millisecond latencies.
 - **Hybrid Search & Local Reranking**: Combines dense vector matching with BM25 keyword search, then refines results using a powerful cross-encoder reranker (Qwen3).
-- **Bring Your Own LLM (BYOK)**: Plug in your API keys for OpenAI (GPT-4o), Anthropic (Claude 3.7), or Google Gemini. Swap seamlessly from the UI with full streaming support.
+- **5 LLM Providers (BYOK)**: Plug in your API keys for OpenAI, Anthropic, Google Gemini, **Groq**, or **OpenRouter**. Swap seamlessly from the UI with full streaming support.
+- **Live Model Discovery**: When you enter an API key, the app automatically fetches the **real-time list of available models** directly from the provider — always up to date, no hardcoded lists.
+- **Model Search**: Instantly filter hundreds of models (especially useful for OpenRouter) with the built-in search bar inside the settings panel.
 - **Granular Citations**: Never question the AI. Every claim includes embedded citations linking directly to the source document and exact page number.
 - **Isolated Workspaces**: Group related documents into 'Notebooks'. Create distinct mental contexts for distinct projects without cross-contamination.
 
@@ -42,7 +44,7 @@ graph TD
         direction TB
         Go -->|1. Parse Document| Parser[Concurrency Parser]
         Parser -->|2. Intelligent Chunking| Chunker[Semantic Chunker]
-        Chunker <-->|3. Generate Embeddings| LocalEmb[LocalAI: Qwen3 Embedding Generator]
+        Chunker <-->|3. Generate Embeddings| LocalEmb["LocalAI: Qwen3 Embedding Generator"]
         LocalEmb -->|4. Upsert Vectors| Weaviate[(Weaviate Database)]:::database
     end
 
@@ -51,7 +53,7 @@ graph TD
         direction TB
         Go -->|1. Hybrid Search| Weaviate
         Weaviate -->|2. Top 20 Results| Go
-        Go <-->|3. Cross-Encode| LocalRerank[LocalAI: Qwen3 Reranker]
+        Go <-->|3. Cross-Encode| LocalRerank["LocalAI: Qwen3 Reranker"]
         LocalRerank -->|4. Final Top N Context| Go
     end
     
@@ -61,6 +63,8 @@ graph TD
         Go -->|"Streaming API"| OpenAI[OpenAI]:::external
         Go -->|"Streaming API"| Gemini[Google Gemini]:::external
         Go -->|"Streaming API"| Anthropic[Anthropic]:::external
+        Go -->|"Streaming API"| Groq[Groq]:::external
+        Go -->|"Streaming API"| OpenRouter[OpenRouter]:::external
     end
 ```
 
@@ -72,13 +76,27 @@ graph TD
 
 ---
 
+## 🤖 Supported LLM Providers
+
+| Provider | How to get a key | Notes |
+|---|---|---|
+| **OpenAI** | [platform.openai.com](https://platform.openai.com/api-keys) | GPT-4o, o1, and more. Live model fetch. |
+| **Google Gemini** | [aistudio.google.com](https://aistudio.google.com/app/apikey) | Gemini 2.5 Flash, 2.0 Flash, 1.5 Pro. Live model fetch. |
+| **Anthropic** | [console.anthropic.com](https://console.anthropic.com/) | Claude 3.7, 3.5 Sonnet/Haiku. Live model fetch. |
+| **Groq** | [console.groq.com](https://console.groq.com/keys) | Llama 3.x, Gemma 2, Mixtral. Ultra-fast inference. Live model fetch. |
+| **OpenRouter** | [openrouter.ai/keys](https://openrouter.ai/keys) | 300+ models from all providers. Live model fetch + search. |
+
+> **Tip:** For OpenRouter, use the built-in model search bar — it has hundreds of available models sorted by newest first.
+
+---
+
 ## 🚀 Quick Start Guide
 
 We have created an all-in-one setup script that makes deploying GopherNotebook completely effortless. It automatically downloads the required local LLM weights, checks your dependencies, and spins up the system.
 
 ### Prerequisites
 - [Docker](https://docs.docker.com/get-docker/) & Docker Compose
-- [Golang 1.25+](https://go.dev/dl/)
+- [Golang 1.22+](https://go.dev/dl/)
 - [Node.js (npm)](https://nodejs.org/)
 
 ### Installation & Run
@@ -106,24 +124,43 @@ We have created an all-in-one setup script that makes deploying GopherNotebook c
 ## ⚙️ How to use Notebooks
 1. **Create a Notebook**: Think of a 'Notebook' as a specific digital brain for a specific task (e.g., "Q3 Financial Analysis" or "Legal Case File A").
 2. **Upload Documents**: Click into the Notebook and drag/drop your PDFs, Word Docs, or text files. The Go backend will chunk and embed them locally.
-3. **Add your LLM Key**: Click "LLM Settings" on the left sidebar. Choose your provider (OpenAI, Gemini, Anthropic), put in your API key, and select the model (e.g., `gpt-4o`). Your API Key is **never** saved to a server—it is stored exclusively in your local browser storage per session.
-4. **Ask Questions**: Ask anything! The engine will retrieve the most statistically relevant semantic passages across all documents in that notebook, cross-reference them, and generate a highly accurate, cited response.
+3. **Configure your LLM**: Click **LLM Settings** in the left sidebar.
+   - Pick a **provider** (OpenAI, Gemini, Anthropic, Groq, or OpenRouter) using the pill buttons.
+   - Paste your **API key** — the app will auto-fetch the current available models from that provider immediately.
+   - **Search and select a model** from the live list using the search bar.
+   - Your API key is **never** sent to our servers — it lives exclusively in your local browser storage.
+4. **Ask Questions**: Ask anything! The engine retrieves the most semantically relevant passages from your documents, cross-references them, and generates a cited response streamed back in real-time.
 
 ---
 
 ## 🛡 Security & Privacy
 GopherNotebook is designed for paranoid operation environments.
 - **Data Ingestion**: Your files are chunked and vectorized locally. Weaviate and the embedding process have no access to the internet.
-- **Provider Passthrough**: We use `langchain-go` to connect entirely statelessly to OpenAI/Gemini/Anthropic. API limits, safety protocols, and privacy policies rest entirely within your configured vendor parameters without man-in-the-middle tracking.
+- **API Keys**: Keys are stored in your browser's `localStorage` only. They are sent directly to the LLM provider per-request via your browser — the GopherNotebook backend never stores or logs them.
+- **Provider Passthrough**: We use `langchain-go` to connect entirely statelessly to LLM providers. API limits, safety protocols, and privacy policies rest entirely within your configured vendor parameters.
+
+---
+
+## 📋 Changelog
+
+### Latest Updates
+- **Groq support**: Full streaming chat via Groq's ultra-fast inference API (Llama 3.3, Gemma 2, Mixtral).
+- **OpenRouter support**: Access 300+ models from a single API key with live model discovery.
+- **Live model fetching**: All 5 providers now fetch real-time model lists when you enter your API key — no more stale hardcoded lists.
+- **Redesigned LLM Settings UI**: Card-based model picker with clear selection highlighting, provider pills, API key show/hide toggle, and a live active-config summary footer.
+- **Model search**: Filter models instantly by name or ID directly inside the settings panel.
+- **Persistent settings**: API key, provider, and model selection are auto-saved to browser storage on dialog close.
+- **Startup reliability**: `start.sh` now frees ports 8090 and 3000 before launching to prevent address-in-use crashes on restart.
+- **Hydration fix**: Added `suppressHydrationWarning` to resolve React hydration mismatch caused by browser extensions (e.g. LanguageTool).
 
 ---
 
 ## 🤝 Contributing
-Contributions are actively welcomed! Whether it is adding new document parsers to the Golang core, implementing new UI features in Tailwind, or optimizing the Docker infrastructure.
+Contributions are actively welcomed! Whether it is adding new document parsers to the Golang core, implementing new UI features, or optimizing the Docker infrastructure.
 1. Fork the Project
 2. Create your Feature Branch (`git checkout -b feature/AmazingFeature`)
 3. Commit your Changes (`git commit -m 'Add some AmazingFeature'`)
-4. Push to the Branch (`git origin feature/AmazingFeature`)
+4. Push to the Branch (`git push origin feature/AmazingFeature`)
 5. Open a Pull Request
 
 ---
