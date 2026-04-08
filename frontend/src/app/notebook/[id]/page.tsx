@@ -73,7 +73,22 @@ const AVAILABLE_MODELS: Record<string, {id: string; name: string}[]> = {
     { id: "meta-llama/llama-3.3-70b-instruct", name: "Llama 3.3 70B (OpenRouter)" },
     { id: "openai/o3-mini", name: "o3 Mini (OpenRouter)" },
   ],
+  ollama: [
+    { id: "llama3.2", name: "Llama 3.2 3B" },
+    { id: "llama3.1:8b", name: "Llama 3.1 8B" },
+    { id: "qwen2.5:7b", name: "Qwen 2.5 7B" },
+    { id: "phi4", name: "Phi-4 14B" },
+    { id: "mistral", name: "Mistral 7B" },
+    { id: "gemma3:4b", name: "Gemma 3 4B" },
+    { id: "deepseek-r1:8b", name: "DeepSeek R1 8B" },
+  ],
+  lmstudio: [
+    { id: "local-model", name: "Whichever model is loaded in LM Studio" },
+  ],
 };
+
+// Providers that run locally and need no API key
+const LOCAL_PROVIDERS = new Set(["ollama", "lmstudio"]);
 
 export default function NotebookWorkspace({ params }: { params: Promise<{ id: string }> }) {
   const resolvedParams = use(params);
@@ -104,6 +119,7 @@ export default function NotebookWorkspace({ params }: { params: Promise<{ id: st
   const [loadingModels, setLoadingModels] = useState(false);
   const [showApiKey, setShowApiKey] = useState(false);
   const [modelSearch, setModelSearch] = useState("");
+  const [localHint, setLocalHint] = useState<"running" | "not_running" | "no_models" | null>(null);
 
   useEffect(() => {
     // Load from local storage
@@ -114,7 +130,10 @@ export default function NotebookWorkspace({ params }: { params: Promise<{ id: st
     setApiKey(storedKey);
     setModel(storedModel);
     
-    if (storedKey) {
+    // Local providers don't need a key — always try to fetch
+    if (LOCAL_PROVIDERS.has(storedProvider)) {
+      fetchDynamicModels(storedProvider, "local");
+    } else if (storedKey) {
       fetchDynamicModels(storedProvider, storedKey);
     }
 
@@ -123,22 +142,29 @@ export default function NotebookWorkspace({ params }: { params: Promise<{ id: st
   }, [notebookId]);
 
   const fetchDynamicModels = async (currentProvider: string, currentApiKey: string) => {
-    if (!currentApiKey.trim()) return;
+    const isLocal = LOCAL_PROVIDERS.has(currentProvider);
+    if (!isLocal && !currentApiKey.trim()) return;
     setLoadingModels(true);
+    setLocalHint(null);
     try {
       const res = await fetch("/api/models", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ provider: currentProvider, apiKey: currentApiKey })
+        body: JSON.stringify({ provider: currentProvider, apiKey: isLocal ? "local" : currentApiKey })
       });
       if (res.ok) {
         const data = await res.json();
         if (data && data.models) {
           setDynamicModels(data.models);
+          if (isLocal) {
+            setLocalHint(data.models.length > 0 ? "running" : "no_models");
+          }
         }
+        if (data?.hint) setLocalHint(data.hint);
       }
     } catch (e) {
       console.error("Failed to load models list", e);
+      if (isLocal) setLocalHint("not_running");
     } finally {
       setLoadingModels(false);
     }
@@ -563,6 +589,7 @@ export default function NotebookWorkspace({ params }: { params: Promise<{ id: st
             {/* Provider pills */}
             <div className="grid gap-2">
               <Label className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">Provider</Label>
+              {/* Cloud providers */}
               <div className="flex flex-wrap gap-2">
                 {[
                   { value: "openai", label: "OpenAI" },
@@ -577,6 +604,7 @@ export default function NotebookWorkspace({ params }: { params: Promise<{ id: st
                       setProvider(p.value);
                       setDynamicModels([]);
                       setModel("");
+                      setLocalHint(null);
                       if (apiKey) fetchDynamicModels(p.value, apiKey);
                     }}
                     className={`px-3 py-1.5 rounded-full text-sm font-medium transition-all border ${
@@ -589,10 +617,89 @@ export default function NotebookWorkspace({ params }: { params: Promise<{ id: st
                   </button>
                 ))}
               </div>
+              {/* Local providers */}
+              <div className="flex flex-wrap gap-2 pt-1">
+                <span className="text-[10px] uppercase tracking-wider text-muted-foreground self-center pr-1">Local:</span>
+                {[
+                  { value: "ollama", label: "🦙 Ollama" },
+                  { value: "lmstudio", label: "🖥 LM Studio" },
+                ].map((p) => (
+                  <button
+                    key={p.value}
+                    onClick={() => {
+                      setProvider(p.value);
+                      setDynamicModels([]);
+                      setModel("");
+                      setLocalHint(null);
+                      fetchDynamicModels(p.value, "local");
+                    }}
+                    className={`px-3 py-1.5 rounded-full text-sm font-medium transition-all border ${
+                      provider === p.value
+                        ? "bg-emerald-500 text-white border-emerald-500 shadow-sm shadow-emerald-500/30"
+                        : "bg-background/50 text-muted-foreground border-border hover:border-emerald-500/50 hover:text-foreground"
+                    }`}
+                  >
+                    {p.label}
+                  </button>
+                ))}
+              </div>
             </div>
 
-            {/* API Key */}
-            <div className="grid gap-2">
+            {/* API Key — hidden for local providers */}
+            {LOCAL_PROVIDERS.has(provider) ? (
+              <div className="grid gap-2">
+                {/* Local status banner */}
+                <div className={`flex items-start gap-3 rounded-xl p-3.5 border text-sm ${
+                  localHint === "running"
+                    ? "bg-emerald-500/10 border-emerald-500/30 text-emerald-400"
+                    : localHint === "no_models"
+                    ? "bg-yellow-500/10 border-yellow-500/30 text-yellow-400"
+                    : "bg-red-500/10 border-red-500/30 text-red-400"
+                }`}>
+                  <div className="mt-0.5 shrink-0">
+                    {loadingModels ? (
+                      <Loader2 className="w-4 h-4 animate-spin" />
+                    ) : localHint === "running" ? (
+                      <CheckCircle2 className="w-4 h-4" />
+                    ) : (
+                      <AlertCircle className="w-4 h-4" />
+                    )}
+                  </div>
+                  <div className="min-w-0">
+                    {loadingModels ? (
+                      <p className="font-medium text-muted-foreground">Checking {provider === "ollama" ? "Ollama" : "LM Studio"}…</p>
+                    ) : localHint === "running" ? (
+                      <p className="font-medium">{provider === "ollama" ? "Ollama" : "LM Studio"} is running — {dynamicModels.length} model{dynamicModels.length !== 1 ? "s" : ""} found</p>
+                    ) : localHint === "no_models" ? (
+                      <>
+                        <p className="font-medium">Ollama is running but no models are downloaded yet</p>
+                        <p className="text-[11px] mt-1 opacity-80">Run: <code className="font-mono bg-black/20 px-1 rounded">ollama pull llama3.2</code></p>
+                      </>
+                    ) : (
+                      <>
+                        <p className="font-medium">{provider === "ollama" ? "Ollama" : "LM Studio"} is not running</p>
+                        {provider === "ollama" ? (
+                          <p className="text-[11px] mt-1 opacity-80">
+                            Install: <code className="font-mono bg-black/20 px-1 rounded">curl -fsSL https://ollama.com/install.sh | sh</code><br />
+                            Then run: <code className="font-mono bg-black/20 px-1 rounded">ollama serve</code>
+                          </p>
+                        ) : (
+                          <p className="text-[11px] mt-1 opacity-80">Open LM Studio → Local Server tab → Start Server</p>
+                        )}
+                      </>
+                    )}
+                  </div>
+                </div>
+                <button
+                  onClick={() => fetchDynamicModels(provider, "local")}
+                  disabled={loadingModels}
+                  className="text-xs text-primary hover:underline disabled:opacity-50 flex items-center gap-1 w-fit"
+                >
+                  {loadingModels ? <><Loader2 className="w-3 h-3 animate-spin" /> Checking...</> : "↻ Retry connection"}
+                </button>
+              </div>
+            ) : (
+              <div className="grid gap-2">
               <div className="flex items-center justify-between">
                 <Label className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">API Key</Label>
                 {apiKey && (
@@ -633,6 +740,7 @@ export default function NotebookWorkspace({ params }: { params: Promise<{ id: st
                 </p>
               )}
             </div>
+            )}
 
             {/* Model Picker */}
             <div className="grid gap-2">
@@ -668,7 +776,8 @@ export default function NotebookWorkspace({ params }: { params: Promise<{ id: st
                   </div>
                 ) : (
                   <div className="divide-y divide-border/40 max-h-[240px] overflow-y-auto">
-                    {/* Backend default option */}
+                    {/* Backend default — hidden for local providers */}
+                    {!LOCAL_PROVIDERS.has(provider) && (
                     <button
                       onClick={() => setModel("")}
                       className={`w-full text-left px-4 py-3 transition-all flex items-center justify-between gap-3 group ${
@@ -683,7 +792,7 @@ export default function NotebookWorkspace({ params }: { params: Promise<{ id: st
                       </div>
                       {model === "" && <CheckCircle2 className="w-4 h-4 text-primary shrink-0" />}
                     </button>
-
+                    )}
                     {(dynamicModels.length > 0 ? dynamicModels : (AVAILABLE_MODELS[provider as keyof typeof AVAILABLE_MODELS] || []))
                       .filter((m) =>
                         modelSearch === "" ||

@@ -96,7 +96,38 @@ export async function POST(req: Request) {
       return NextResponse.json({ models });
     }
 
+    if (provider === 'ollama') {
+      try {
+        const res = await fetch('http://localhost:11434/api/tags');
+        if (!res.ok) throw new Error('not_running');
+        const data = await res.json();
+        if (!data.models || data.models.length === 0) {
+          return NextResponse.json({ models: [], hint: 'no_models' });
+        }
+        const models = data.models.map((m: any) => ({
+          id: m.name,
+          name: `${m.name} (${(m.size / 1e9).toFixed(1)} GB)`,
+        }));
+        return NextResponse.json({ models });
+      } catch {
+        return NextResponse.json({ models: [], hint: 'not_running' });
+      }
+    }
+
+    if (provider === 'lmstudio') {
+      try {
+        const res = await fetch('http://localhost:1234/v1/models');
+        if (!res.ok) throw new Error('not_running');
+        const data = await res.json();
+        const models = (data.data || []).map((m: any) => ({ id: m.id, name: m.id }));
+        return NextResponse.json({ models });
+      } catch {
+        return NextResponse.json({ models: [], hint: 'not_running' });
+      }
+    }
+
     return NextResponse.json({ error: 'Unknown provider' }, { status: 400 });
+
 
   } catch (error: any) {
     return NextResponse.json({ error: error.message }, { status: 500 });

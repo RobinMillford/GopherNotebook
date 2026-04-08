@@ -1,0 +1,49 @@
+name: AI PR Code Reviewer
+
+permissions:
+  contents: read
+  pull-requests: write
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+  pull_request_review_comment:
+    types: [created]
+
+concurrency:
+  group: ${{ github.repository }}-${{ github.event.number || github.head_ref || github.sha }}-pr-review
+  cancel-in-progress: true
+
+jobs:
+  review:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: AI PR Reviewer
+        uses: coderabbitai/openai-pr-reviewer@latest
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+        with:
+          debug: false
+          review_simple_changes: false
+          review_comment_lgtm: false
+          openai_light_model: gpt-4o-mini
+          openai_heavy_model: gpt-4o
+          system_message: |
+            You are a strict, highly skilled cybersecurity engineer and code reviewer.
+            Your primary job is to review the code changes and verify if there is ANY malicious code, 
+            backdoors, security vulnerabilities, or suspicious functions included in this Pull Request.
+            
+            Look aggressively for:
+            - Obfuscated code or hidden backdoors
+            - Hardcoded credentials or secrets
+            - SQL Injections, XSS, SSRF, or other OWASP Top 10 vulnerabilities
+            - Suspicious network calls or remote code execution risks
+            - Unsafe usage of local file execution
+            
+            If you find any potentially malicious code or critical vulnerabilities, HIGHLIGHT IT IMMEDIATELY 
+            in your review comment and explain exactly why it is dangerous and how to understand it. 
+            If the code looks safe and clean, conduct a standard best-practice code review.

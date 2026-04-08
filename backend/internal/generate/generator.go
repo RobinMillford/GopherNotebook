@@ -92,22 +92,49 @@ func (g *Generator) createLLM(provider, apiKey, model string) (llms.Model, error
 		if model != "" {
 			opts = append(opts, openai.WithModel(model))
 		}
-                if strings.ToLower(provider) == "groq" {
-                        opts = append(opts, openai.WithBaseURL("https://api.groq.com/openai/v1"))
-                } else if strings.ToLower(provider) == "openrouter" {
-                        opts = append(opts, openai.WithBaseURL("https://openrouter.ai/api/v1"))
-                }
+		switch strings.ToLower(provider) {
+		case "groq":
+			opts = append(opts, openai.WithBaseURL("https://api.groq.com/openai/v1"))
+		case "openrouter":
+			opts = append(opts, openai.WithBaseURL("https://openrouter.ai/api/v1"))
+		}
 		return openai.New(opts...)
+
+	case "ollama":
+		// Ollama exposes an OpenAI-compatible API on localhost:11434.
+		// A non-empty token is required by the client library but ignored by Ollama.
+		opts := []openai.Option{
+			openai.WithToken("ollama"),
+			openai.WithBaseURL("http://localhost:11434/v1"),
+		}
+		if model != "" {
+			opts = append(opts, openai.WithModel(model))
+		}
+		return openai.New(opts...)
+
+	case "lmstudio":
+		// LM Studio exposes an OpenAI-compatible API on localhost:1234.
+		opts := []openai.Option{
+			openai.WithToken("lm-studio"),
+			openai.WithBaseURL("http://localhost:1234/v1"),
+		}
+		if model != "" {
+			opts = append(opts, openai.WithModel(model))
+		}
+		return openai.New(opts...)
+
 	case "google", "gemini":
 		return googleai.New(ctx(context.Background()), googleai.WithAPIKey(apiKey), googleai.WithDefaultModel(model))
+
 	case "anthropic":
 		opts := []anthropic.Option{anthropic.WithToken(apiKey)}
 		if model != "" {
 			opts = append(opts, anthropic.WithModel(model))
 		}
 		return anthropic.New(opts...)
+
 	default:
-		return nil, fmt.Errorf("unsupported LLM provider: %s (use openai, google, or anthropic)", provider)
+		return nil, fmt.Errorf("unsupported LLM provider: %s (supported: openai, google, anthropic, groq, openrouter, ollama, lmstudio)", provider)
 	}
 }
 

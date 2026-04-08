@@ -135,7 +135,29 @@ fuser -k 8090/tcp 2>/dev/null || true
 fuser -k 3000/tcp 2>/dev/null || true
 sleep 1
 
-# 4. Start Core Infrastructure (Docker Compose)
+# 4. Auto-start Ollama if installed and not already running
+OLLAMA_PID=""
+if command -v ollama &> /dev/null; then
+    if curl -sf http://localhost:11434/api/tags > /dev/null 2>&1; then
+        echo -e "${GREEN}✓ Ollama is already running.${NC}"
+    else
+        echo -e "${YELLOW}Ollama is installed. Starting ollama serve in the background...${NC}"
+        ollama serve > /dev/null 2>&1 &
+        OLLAMA_PID=$!
+        # Wait up to 5s for it to come up
+        for i in $(seq 1 5); do
+            sleep 1
+            if curl -sf http://localhost:11434/api/tags > /dev/null 2>&1; then
+                echo -e "${GREEN}✓ Ollama is now running (PID $OLLAMA_PID).${NC}"
+                break
+            fi
+        done
+    fi
+else
+    echo -e "${YELLOW}ℹ Ollama not found (optional). Install from https://ollama.com to use local open-source models.${NC}"
+fi
+
+# 5. Start Core Infrastructure (Docker Compose)
 echo -e "${YELLOW}Starting core infrastructure (Weaviate & LocalAI)...${NC}"
 $DOCKER_COMPOSE_CMD up -d
 
@@ -149,6 +171,10 @@ cleanup() {
     if [ -n "$BACKEND_PID" ]; then
         kill $BACKEND_PID 2>/dev/null || true
     fi
+    if [ -n "$OLLAMA_PID" ]; then
+        echo -e "${YELLOW}Stopping Ollama (started by this script)...${NC}"
+        kill $OLLAMA_PID 2>/dev/null || true
+    fi
     
     echo -e "${YELLOW}Stopping docker containers...${NC}"
     $DOCKER_COMPOSE_CMD stop
@@ -158,7 +184,7 @@ cleanup() {
 
 trap cleanup SIGINT SIGTERM EXIT
 
-# 5. Start Go Backend
+# 6. Start Go Backend
 echo -e "${YELLOW}Starting Go Backend (http://localhost:8090)...${NC}"
 cd backend
 go mod tidy
@@ -166,7 +192,7 @@ go run ./cmd/server > server.log 2>&1 &
 BACKEND_PID=$!
 cd ..
 
-# 6. Start Next.js Frontend
+# 7. Start Next.js Frontend
 echo -e "${YELLOW}Starting Next.js Frontend (http://localhost:3000)...${NC}"
 cd frontend
 if [ ! -d "node_modules" ]; then
