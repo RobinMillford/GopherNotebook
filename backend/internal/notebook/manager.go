@@ -153,6 +153,9 @@ func (m *Manager) RemoveSource(notebookID, fileName string) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
+	// Ensure fileName is safe (no path traversal)
+	fileName = filepath.Base(fileName)
+
 	sources, err := m.loadSources(notebookID)
 	if err != nil {
 		return err

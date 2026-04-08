@@ -36,6 +36,11 @@ func (s *Server) Chat(c *gin.Context) {
 		return
 	}
 
+	if !isValidID(notebookID) {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid notebook ID"})
+		return
+	}
+
 	if model == "" {
 		// Default models per provider
 		switch provider {
@@ -111,7 +116,7 @@ func (s *Server) Chat(c *gin.Context) {
 		)
 		if err != nil {
 			errChunk := generate.StreamChunk{
-				Content: "\n\n[Error: " + err.Error() + "]",
+				Content: "\n\n[Error: " + sanitizeError(err, apiKey) + "]",
 				Done:    true,
 			}
 			fullResponse += errChunk.Content

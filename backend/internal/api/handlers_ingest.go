@@ -26,6 +26,10 @@ var (
 // UploadFiles handles multipart file upload and triggers async ingestion.
 func (s *Server) UploadFiles(c *gin.Context) {
 	notebookID := c.Param("id")
+	if !isValidID(notebookID) {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid notebook ID"})
+		return
+	}
 
 	// Verify notebook exists
 	if _, err := s.nbManager.Get(notebookID); err != nil {
@@ -142,6 +146,10 @@ func (s *Server) UploadFiles(c *gin.Context) {
 // IngestProgress streams ingestion progress via SSE.
 func (s *Server) IngestProgress(c *gin.Context) {
 	notebookID := c.Param("id")
+	if !isValidID(notebookID) {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid notebook ID"})
+		return
+	}
 
 	// Set SSE headers
 	c.Writer.Header().Set("Content-Type", "text/event-stream")

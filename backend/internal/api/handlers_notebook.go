@@ -47,6 +47,10 @@ func (s *Server) CreateNotebook(c *gin.Context) {
 // GetNotebook returns a notebook with its sources.
 func (s *Server) GetNotebook(c *gin.Context) {
 	id := c.Param("id")
+	if !isValidID(id) {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid notebook ID"})
+		return
+	}
 
 	detail, err := s.nbManager.Get(id)
 	if err != nil {
@@ -60,6 +64,10 @@ func (s *Server) GetNotebook(c *gin.Context) {
 // DeleteNotebook removes a notebook and all its chunks from Weaviate.
 func (s *Server) DeleteNotebook(c *gin.Context) {
 	id := c.Param("id")
+	if !isValidID(id) {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid notebook ID"})
+		return
+	}
 
 	// Delete chunks from Weaviate first
 	if err := db.DeleteNotebookChunks(c.Request.Context(), s.weaviate, id); err != nil {
@@ -79,6 +87,10 @@ func (s *Server) DeleteNotebook(c *gin.Context) {
 // ListSources returns sources for a notebook.
 func (s *Server) ListSources(c *gin.Context) {
 	id := c.Param("id")
+	if !isValidID(id) {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid notebook ID"})
+		return
+	}
 
 	sources, err := s.nbManager.GetSources(id)
 	if err != nil {
@@ -92,6 +104,10 @@ func (s *Server) ListSources(c *gin.Context) {
 // DeleteSource removes a source file's chunks from Weaviate.
 func (s *Server) DeleteSource(c *gin.Context) {
 	notebookID := c.Param("id")
+	if !isValidID(notebookID) {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid notebook ID"})
+		return
+	}
 	fileName := c.Param("filename")
 
 	// TODO: Delete specific file's chunks from Weaviate (needs batch delete with compound filter)
@@ -107,6 +123,10 @@ func (s *Server) DeleteSource(c *gin.Context) {
 // ClearChatHistory deletes the chat history for a notebook
 func (s *Server) ClearChatHistory(c *gin.Context) {
         id := c.Param("id")
+	if !isValidID(id) {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid notebook ID"})
+		return
+	}
 
         if err := s.nbManager.ClearChatHistory(id); err != nil {
                 c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to clear chat history"})
