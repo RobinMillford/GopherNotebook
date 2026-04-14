@@ -53,10 +53,24 @@ frontend/AGENTS.md
 frontend/CLAUDE.md
 AGENTS.md
 CLAUDE.md
+# .claude/
+
+# ─── Python ───
+__pycache__/
+*.py[cod]
+.venv/
+venv/
 
 # ─── Miscellaneous ───
 *.log
 *.patch
 *.py~
 .env
-.claude/
+*.env.*
+!*.env.example
+# Added by code-review-graph
+.code-review-graph/
+GEMINI.md
+.windsurfrules
+# Other potential local AI noise
+.anthropic/

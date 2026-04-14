@@ -38,6 +38,28 @@ func NewGenerator() *Generator {
 // GenerateStream calls the external LLM with the provided context chunks and
 // streams the response via the callback function.
 // The LLM provider and API key are passed per-request for privacy.
+// HyDEGenerate generates a short hypothetical answer for the query.
+// The result is used as the embedding input instead of the raw query to improve recall.
+func (g *Generator) HyDEGenerate(ctx context.Context, query, provider, apiKey, model string) (string, error) {
+	llm, err := g.createLLM(ctx, provider, apiKey, model)
+	if err != nil {
+		return "", fmt.Errorf("failed to create LLM for HyDE: %w", err)
+	}
+
+	prompt := fmt.Sprintf(
+		"Write a concise 2-3 sentence factual answer to the following question as if quoting a source document.\nQuestion: %s\nAnswer:",
+		query,
+	)
+	resp, err := llms.GenerateFromSinglePrompt(ctx, llm, prompt,
+		llms.WithTemperature(0.0),
+		llms.WithMaxTokens(200),
+	)
+	if err != nil {
+		return "", fmt.Errorf("HyDE generation failed: %w", err)
+	}
+	return resp, nil
+}
+
 func (g *Generator) GenerateStream(
 	ctx context.Context,
 	query string,
@@ -45,7 +67,9 @@ func (g *Generator) GenerateStream(
 	provider string,
 	apiKey string,
 	model string,
-        messages []notebook.Message,
+	messages []notebook.Message,
+	temperature float64,
+	systemPrompt string,
 	streamFn func(StreamChunk),
 ) error {
 	// Build the LLM client based on provider
@@ -55,14 +79,14 @@ func (g *Generator) GenerateStream(
 	}
 
 	// Build the prompt with context and citation instructions
-	prompt := buildPrompt(query, chunks, messages)
+	prompt := buildPrompt(query, chunks, messages, systemPrompt)
 
 	// Build citations from the context chunks
 	citations := buildCitations(chunks)
 
 	// Stream the response
 	_, err = llms.GenerateFromSinglePrompt(ctx, llm, prompt,
-		llms.WithTemperature(0.3),
+		llms.WithTemperature(temperature),
 		llms.WithMaxTokens(4096),
 		llms.WithStreamingFunc(func(ctx context.Context, chunk []byte) error {
 			streamFn(StreamChunk{
@@ -139,11 +163,16 @@ func (g *Generator) createLLM(ctx context.Context, provider, apiKey, model strin
 }
 
 // buildPrompt constructs the system + user prompt with context chunks.
-func buildPrompt(query string, chunks []retrieve.RetrievedChunk, messages []notebook.Message) string {
+func buildPrompt(query string, chunks []retrieve.RetrievedChunk, messages []notebook.Message, systemPrompt string) string {
 	var sb strings.Builder
 
-	sb.WriteString("You are a helpful research assistant. Answer the user's question based ONLY on the provided source documents. ")
-	sb.WriteString("If the answer cannot be found in the sources, say so clearly. ")
+	if systemPrompt != "" {
+		sb.WriteString(systemPrompt)
+		sb.WriteString("\n\n")
+	} else {
+		sb.WriteString("You are a helpful research assistant. Answer the user's question based ONLY on the provided source documents. ")
+		sb.WriteString("If the answer cannot be found in the sources, say so clearly. ")
+	}
 	sb.WriteString("When referencing information, cite the source using [Source N] notation where N is the source number.\n\n")
         if len(messages) > 0 {
                 sb.WriteString("=== CHAT HISTORY ===\n")

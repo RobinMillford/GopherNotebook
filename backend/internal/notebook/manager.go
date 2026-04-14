@@ -77,7 +77,7 @@ func (m *Manager) Get(id string) (*NotebookDetail, error) {
 }
 
 // Create creates a new notebook and returns it.
-func (m *Manager) Create(name, description string) (*Notebook, error) {
+func (m *Manager) Create(name, description string, tags []string) (*Notebook, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
@@ -85,6 +85,7 @@ func (m *Manager) Create(name, description string) (*Notebook, error) {
 		ID:          uuid.New().String(),
 		Name:        name,
 		Description: description,
+		Tags:        tags,
 		CreatedAt:   time.Now(),
 		UpdatedAt:   time.Now(),
 		FileCount:   0,
@@ -108,6 +109,36 @@ func (m *Manager) Delete(id string) error {
 	}
 
 	return os.RemoveAll(dir)
+}
+
+// UpdateNotebook applies a partial update to notebook metadata.
+func (m *Manager) UpdateNotebook(id string, upd NotebookUpdate) (*Notebook, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	nb, err := m.load(id)
+	if err != nil {
+		return nil, err
+	}
+
+	if upd.Name != nil {
+		nb.Name = *upd.Name
+	}
+	if upd.Description != nil {
+		nb.Description = *upd.Description
+	}
+	if upd.SystemPrompt != nil {
+		nb.SystemPrompt = *upd.SystemPrompt
+	}
+	if upd.Tags != nil {
+		nb.Tags = *upd.Tags
+	}
+	nb.UpdatedAt = time.Now()
+
+	if err := m.save(nb); err != nil {
+		return nil, err
+	}
+	return nb, nil
 }
 
 // AddSource records a source file in the notebook's metadata.
@@ -304,6 +335,34 @@ func (m *Manager) saveSources(id string, sources []Source) error {
 		return err
 	}
 	return os.WriteFile(m.sourcesFile(id), data, 0644)
+}
+
+// TruncateMessagesFrom removes the message with the given ID and all subsequent messages.
+func (m *Manager) TruncateMessagesFrom(notebookID, messageID string) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	messages, err := m.loadMessages(notebookID)
+	if err != nil {
+		return err
+	}
+
+	idx := -1
+	for i, msg := range messages {
+		if msg.ID == messageID {
+			idx = i
+			break
+		}
+	}
+	if idx == -1 {
+		return fmt.Errorf("message %s not found in notebook %s", messageID, notebookID)
+	}
+
+	data, err := json.MarshalIndent(messages[:idx], "", "  ")
+	if err != nil {
+		return err
+	}
+	return os.WriteFile(m.messagesFile(notebookID), data, 0644)
 }
 
 // ClearChatHistory removes the messages file for a notebook.

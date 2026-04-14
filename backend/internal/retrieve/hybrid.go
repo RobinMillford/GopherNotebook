@@ -20,6 +20,7 @@ type RetrievedChunk struct {
 	ChunkIndex    int     `json:"chunkIndex"`
 	HeaderContext string  `json:"headerContext"`
 	Score         float64 `json:"score"`
+	NotebookID    string  `json:"notebookID,omitempty"`
 }
 
 // HybridSearcher performs hybrid (vector + BM25) search on Weaviate.
@@ -37,19 +38,44 @@ func NewHybridSearcher(client *weaviate.Client, embedder *ingest.Embedder) *Hybr
 }
 
 // Search performs a hybrid search filtered by notebook_id.
+// If fileNames is non-empty, results are further filtered to those files only.
 // Returns the top `limit` results ranked by hybrid score (alpha=0.5 = balanced).
-func (hs *HybridSearcher) Search(ctx context.Context, query string, notebookID string, limit int) ([]RetrievedChunk, error) {
+func (hs *HybridSearcher) Search(ctx context.Context, query string, notebookID string, limit int, fileNames []string) ([]RetrievedChunk, error) {
 	// Generate query embedding
 	queryVector, err := hs.embedder.EmbedQuery(query)
 	if err != nil {
 		return nil, fmt.Errorf("failed to embed query: %w", err)
 	}
 
-	// Build the notebook_id filter
-	whereFilter := filters.Where().
+	// Build the where filter: always filter by notebook_id; optionally by file name.
+	notebookFilter := filters.Where().
 		WithPath([]string{"notebook_id"}).
 		WithOperator(filters.Equal).
 		WithValueString(notebookID)
+
+	var whereFilter *filters.WhereBuilder
+	if len(fileNames) > 0 {
+		fileOperands := make([]*filters.WhereBuilder, len(fileNames))
+		for i, fn := range fileNames {
+			fileOperands[i] = filters.Where().
+				WithPath([]string{"file_name"}).
+				WithOperator(filters.Equal).
+				WithValueString(fn)
+		}
+		var fileFilter *filters.WhereBuilder
+		if len(fileOperands) == 1 {
+			fileFilter = fileOperands[0]
+		} else {
+			fileFilter = filters.Where().
+				WithOperator(filters.Or).
+				WithOperands(fileOperands)
+		}
+		whereFilter = filters.Where().
+			WithOperator(filters.And).
+			WithOperands([]*filters.WhereBuilder{notebookFilter, fileFilter})
+	} else {
+		whereFilter = notebookFilter
+	}
 
 	// Build hybrid search with vector
 	hybridArg := hs.client.GraphQL().HybridArgumentBuilder().
@@ -76,6 +102,66 @@ func (hs *HybridSearcher) Search(ctx context.Context, query string, notebookID s
 		Do(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("hybrid search failed: %w", err)
+	}
+
+	return parseSearchResults(result)
+}
+
+// SearchGlobal performs a hybrid search across all notebooks (or a subset).
+// If notebookIDs is empty, all notebooks are searched.
+func (hs *HybridSearcher) SearchGlobal(ctx context.Context, query string, notebookIDs []string, limit int) ([]RetrievedChunk, error) {
+	queryVector, err := hs.embedder.EmbedQuery(query)
+	if err != nil {
+		return nil, fmt.Errorf("failed to embed query: %w", err)
+	}
+
+	var whereFilter *filters.WhereBuilder
+	if len(notebookIDs) == 1 {
+		whereFilter = filters.Where().
+			WithPath([]string{"notebook_id"}).
+			WithOperator(filters.Equal).
+			WithValueString(notebookIDs[0])
+	} else if len(notebookIDs) > 1 {
+		operands := make([]*filters.WhereBuilder, len(notebookIDs))
+		for i, id := range notebookIDs {
+			operands[i] = filters.Where().
+				WithPath([]string{"notebook_id"}).
+				WithOperator(filters.Equal).
+				WithValueString(id)
+		}
+		whereFilter = filters.Where().
+			WithOperator(filters.Or).
+			WithOperands(operands)
+	}
+
+	hybridArg := hs.client.GraphQL().HybridArgumentBuilder().
+		WithQuery(query).
+		WithVector(queryVector).
+		WithAlpha(0.5)
+
+	fields := []graphql.Field{
+		{Name: "content"},
+		{Name: "file_name"},
+		{Name: "page_number"},
+		{Name: "chunk_index"},
+		{Name: "header_context"},
+		{Name: "notebook_id"},
+		{Name: "_additional { score }"},
+	}
+
+	q := hs.client.GraphQL().Get().
+		WithClassName(db.ClassName).
+		WithFields(fields...).
+		WithHybrid(hybridArg).
+		WithLimit(limit)
+
+	if whereFilter != nil {
+		q = q.WithWhere(whereFilter)
+	}
+
+	result, err := q.Do(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("global search failed: %w", err)
 	}
 
 	return parseSearchResults(result)
@@ -110,6 +196,7 @@ func parseSearchResults(result *models.GraphQLResponse) ([]RetrievedChunk, error
 			HeaderContext: getStringField(obj, "header_context"),
 			PageNumber:    getIntField(obj, "page_number"),
 			ChunkIndex:    getIntField(obj, "chunk_index"),
+			NotebookID:    getStringField(obj, "notebook_id"),
 		}
 
 		// Extract score from _additional

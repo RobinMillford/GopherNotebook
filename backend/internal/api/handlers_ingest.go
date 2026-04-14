@@ -7,12 +7,14 @@ import (
 	"io"
 	"log"
 	"net/http"
+	"net/url"
 	"os"
 	"path/filepath"
 	"sync"
 	"time"
 
 	"github.com/gin-gonic/gin"
+	"github.com/yamin/gophernotebook/internal/db"
 	"github.com/yamin/gophernotebook/internal/ingest"
 	"github.com/yamin/gophernotebook/internal/notebook"
 )
@@ -226,6 +228,144 @@ func isAlreadyIngested(sources []notebook.Source, fileName string) bool {
 		}
 	}
 	return false
+}
+
+// IngestURLRequest is the JSON body for URL ingestion.
+type IngestURLRequest struct {
+	URL string `json:"url" binding:"required"`
+}
+
+// IngestURL fetches a URL, parses it, and ingests it into the notebook.
+func (s *Server) IngestURL(c *gin.Context) {
+	notebookID := c.Param("id")
+	if !isValidID(notebookID) {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid notebook ID"})
+		return
+	}
+
+	var req IngestURLRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "URL is required"})
+		return
+	}
+
+	// Only allow http/https to prevent SSRF
+	parsedURL, err := url.Parse(req.URL)
+	if err != nil || (parsedURL.Scheme != "http" && parsedURL.Scheme != "https") {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Only http/https URLs are supported"})
+		return
+	}
+
+	if _, err := s.nbManager.Get(notebookID); err != nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "Notebook not found"})
+		return
+	}
+
+	fileName := ingest.URLToFileName(req.URL)
+
+	_ = s.nbManager.AddSource(notebookID, notebook.Source{
+		FileName:   fileName,
+		IngestedAt: time.Now(),
+		Status:     "processing",
+	})
+
+	go func() {
+		ctx := context.Background()
+
+		doc, fetchErr := ingest.FetchURL(req.URL)
+		if fetchErr != nil {
+			_ = s.nbManager.AddSource(notebookID, notebook.Source{
+				FileName:   fileName,
+				IngestedAt: time.Now(),
+				Status:     "failed",
+				Error:      fetchErr.Error(),
+			})
+			broadcastProgress(notebookID, ingest.IngestProgress{
+				TotalFiles: 1, ProcessedFiles: 1,
+				CurrentFile: req.URL,
+				Status:      "done",
+				Error:       fetchErr.Error(),
+			})
+			return
+		}
+
+		if ingestErr := s.workerPool.IngestDoc(ctx, notebookID, doc); ingestErr != nil {
+			_ = s.nbManager.AddSource(notebookID, notebook.Source{
+				FileName:   fileName,
+				IngestedAt: time.Now(),
+				Status:     "failed",
+				Error:      ingestErr.Error(),
+			})
+			broadcastProgress(notebookID, ingest.IngestProgress{
+				TotalFiles: 1, ProcessedFiles: 1,
+				CurrentFile: req.URL,
+				Status:      "done",
+				Error:       ingestErr.Error(),
+			})
+			return
+		}
+
+		_ = s.nbManager.AddSource(notebookID, notebook.Source{
+			FileName:   fileName,
+			IngestedAt: time.Now(),
+			Status:     "ingested",
+		})
+		broadcastProgress(notebookID, ingest.IngestProgress{
+			TotalFiles: 1, ProcessedFiles: 1,
+			CurrentFile: req.URL,
+			Status:      "done",
+		})
+	}()
+
+	c.JSON(http.StatusAccepted, gin.H{"message": "URL ingestion started", "fileName": fileName})
+}
+
+// ReIngestSource deletes old chunks for a source file and re-processes it from disk.
+func (s *Server) ReIngestSource(c *gin.Context) {
+	notebookID := c.Param("id")
+	if !isValidID(notebookID) {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid notebook ID"})
+		return
+	}
+	fileName := filepath.Base(c.Param("filename"))
+
+	filePath := filepath.Join(s.cfg.UploadDir, notebookID, fileName)
+	if _, err := os.Stat(filePath); os.IsNotExist(err) {
+		c.JSON(http.StatusNotFound, gin.H{"error": "File not found on disk; please re-upload"})
+		return
+	}
+
+	_ = s.nbManager.AddSource(notebookID, notebook.Source{
+		FileName:   fileName,
+		IngestedAt: time.Now(),
+		Status:     "processing",
+	})
+
+	go func() {
+		ctx := context.Background()
+
+		if err := db.DeleteSourceChunks(ctx, s.weaviate, notebookID, fileName); err != nil {
+			log.Printf("ReIngest: failed to delete old chunks for %s: %v", fileName, err)
+		}
+
+		s.workerPool.Ingest(ctx, []ingest.FileJob{{FilePath: filePath, NotebookID: notebookID}}, func(progress ingest.IngestProgress) {
+			status := "ingested"
+			errMsg := ""
+			if progress.Error != "" {
+				status = "failed"
+				errMsg = progress.Error
+			}
+			_ = s.nbManager.AddSource(notebookID, notebook.Source{
+				FileName:   fileName,
+				IngestedAt: time.Now(),
+				Status:     status,
+				Error:      errMsg,
+			})
+			broadcastProgress(notebookID, progress)
+		})
+	}()
+
+	c.JSON(http.StatusAccepted, gin.H{"message": "Re-ingestion started"})
 }
 
 // broadcastProgress sends progress to all SSE listeners for a notebook.

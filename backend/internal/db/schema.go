@@ -7,6 +7,7 @@ import (
 
 	"github.com/weaviate/weaviate-go-client/v4/weaviate"
 	"github.com/weaviate/weaviate-go-client/v4/weaviate/filters"
+	"github.com/weaviate/weaviate-go-client/v4/weaviate/graphql"
 	"github.com/weaviate/weaviate/entities/models"
 	"github.com/weaviate/weaviate/entities/schema"
 )
@@ -91,6 +92,69 @@ func EnsureSchema(ctx context.Context, client *weaviate.Client) error {
 
 	log.Printf("✓ Created Weaviate class '%s'", ClassName)
 	return nil
+}
+
+// DeleteSourceChunks removes all DocumentChunk objects for a specific file within a notebook.
+func DeleteSourceChunks(ctx context.Context, client *weaviate.Client, notebookID, fileName string) error {
+	whereFilter := filters.Where().
+		WithOperator(filters.And).
+		WithOperands([]*filters.WhereBuilder{
+			filters.Where().WithPath([]string{"notebook_id"}).WithOperator(filters.Equal).WithValueString(notebookID),
+			filters.Where().WithPath([]string{"file_name"}).WithOperator(filters.Equal).WithValueString(fileName),
+		})
+
+	result, err := client.Batch().ObjectsBatchDeleter().
+		WithClassName(ClassName).
+		WithWhere(whereFilter).
+		Do(ctx)
+	if err != nil {
+		return fmt.Errorf("failed to delete chunks for %s in notebook %s: %w", fileName, notebookID, err)
+	}
+
+	if result != nil && result.Results != nil {
+		log.Printf("✓ Deleted %d chunks for file %s in notebook %s", result.Results.Successful, fileName, notebookID)
+	}
+	return nil
+}
+
+// IsNearDuplicate returns true if any existing chunk in the notebook is within
+// distanceThreshold cosine distance of the provided vector.
+func IsNearDuplicate(ctx context.Context, client *weaviate.Client, notebookID string, vector []float32, distanceThreshold float32) (bool, error) {
+	whereFilter := filters.Where().
+		WithPath([]string{"notebook_id"}).
+		WithOperator(filters.Equal).
+		WithValueString(notebookID)
+
+	nearVector := client.GraphQL().NearVectorArgBuilder().
+		WithVector(vector).
+		WithDistance(distanceThreshold)
+
+	fields := []graphql.Field{
+		{Name: "_additional { distance }"},
+	}
+
+	result, err := client.GraphQL().Get().
+		WithClassName(ClassName).
+		WithFields(fields...).
+		WithNearVector(nearVector).
+		WithWhere(whereFilter).
+		WithLimit(1).
+		Do(ctx)
+	if err != nil {
+		return false, fmt.Errorf("near-duplicate query failed: %w", err)
+	}
+
+	if result == nil || result.Data == nil {
+		return false, nil
+	}
+
+	getData, ok := result.Data["Get"].(map[string]interface{})
+	if !ok {
+		return false, nil
+	}
+
+	classData, ok := getData[ClassName].([]interface{})
+	return ok && len(classData) > 0, nil
 }
 
 // DeleteNotebookChunks removes all DocumentChunk objects for a given notebook_id.

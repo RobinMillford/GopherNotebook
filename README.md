@@ -1,176 +1,400 @@
+<div align="center">
+
 # 🐀 GopherNotebook
 
-<div align="center">
-  <p><strong>Source-grounded RAG workspaces powered by blazingly fast Golang and local AI infrastructure.</strong></p>
+**Source-grounded RAG workspaces — 100% local embeddings, BYOK or fully offline generation.**
+
+[![Go](https://img.shields.io/badge/Go-1.22+-00ADD8?style=flat&logo=go)](https://go.dev/)
+[![Next.js](https://img.shields.io/badge/Next.js-16.2-black?style=flat&logo=next.js)](https://nextjs.org/)
+[![Weaviate](https://img.shields.io/badge/Weaviate-1.28-green?style=flat)](https://weaviate.io/)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
+[![PRs Welcome](https://img.shields.io/badge/PRs-welcome-brightgreen.svg)](CONTRIBUTING.md)
+
 </div>
 
-GopherNotebook is an open-source, commercial-grade document intelligence platform. Stop sending your sensitive PDFs and private corporate reports to the public cloud for processing. GopherNotebook keeps your embeddings and searches 100% local, utilizing **Weaviate** and state-of-the-art **Qwen3** local models to guarantee zero data leakage during the memory generation process.
+---
 
-You control the final generation — bring your own API key for **OpenAI, Google Gemini, Anthropic, Groq, or OpenRouter**, or run **100% local open-source models** using **Ollama or LM Studio**.
+GopherNotebook is an open-source document intelligence platform. Upload PDFs, Word docs, spreadsheets, and web pages into isolated workspaces called *Notebooks*, then chat with them using any LLM you choose — cloud or fully local. Your files never leave your machine during ingestion; embeddings, chunking, and reranking all run locally via Weaviate and Qwen3 GGUF models.
 
 ---
 
-## ✨ Key Features
-- **100% Local RAG Embeddings**: Your files never leave your machine during ingestion. Embeddings and reranking run entirely via local Weaviate and LocalAI models.
-- **Blazing Fast Golang**: Built on Go, the backend handles large document chunking and concurrent hybrid searches at sub-millisecond latencies.
-- **Hybrid Search & Local Reranking**: Combines dense vector matching with BM25 keyword search, then refines results using a powerful cross-encoder reranker (Qwen3).
-- **7 LLM Providers (BYOK or Local)**: Plug in API keys for OpenAI, Anthropic, Google Gemini, Groq, or OpenRouter. Or use **Ollama / LM Studio** for completely local, free, offline chat generation.
-- **Live Model Discovery**: When you enter an API key, the app automatically fetches the **real-time list of available models** directly from the provider — always up to date, no hardcoded lists.
-- **Model Search**: Instantly filter hundreds of models (especially useful for OpenRouter) with the built-in search bar inside the settings panel.
-- **Granular Citations**: Never question the AI. Every claim includes embedded citations linking directly to the source document and exact page number.
-- **Isolated Workspaces**: Group related documents into 'Notebooks'. Create distinct mental contexts for distinct projects without cross-contamination.
+## Table of Contents
+
+- [Features](#-features)
+- [Architecture](#-architecture)
+- [Tech Stack](#-tech-stack)
+- [Quick Start](#-quick-start)
+- [Configuration](#-configuration)
+- [Usage Guide](#-usage-guide)
+- [Supported LLM Providers](#-supported-llm-providers)
+- [Supported File Types](#-supported-file-types)
+- [Security & Privacy](#-security--privacy)
+- [Roadmap](#-roadmap)
+- [Project Structure](#-project-structure)
+- [Contributing](#-contributing)
+- [License](#-license)
 
 ---
 
-## 🏗 System Architecture
+## ✨ Features
 
-GopherNotebook utilizes a true, two-stage Retrieval-Augmented Generation (RAG) architecture.
+### RAG Core
+| Feature | Description |
+|---|---|
+| **Local embeddings** | Files are chunked and vectorized entirely on your machine via Qwen3 (GGUF Q4_K_M) and LocalAI — no data leaves your network |
+| **Hybrid search** | Combines dense vector similarity (HNSW cosine) with BM25 keyword matching (α = 0.5) for best-of-both retrieval |
+| **Cross-encoder reranking** | A second Qwen3 model re-scores the top candidates using full pairwise attention before they reach the LLM |
+| **HyDE retrieval** | Hypothetical Document Embedding — generates a fake answer, embeds it, and uses *that* as the query vector for better recall on abstract questions |
+| **Semantic deduplication** | Skips near-duplicate chunks at ingest time (cosine distance < 0.03 threshold, configurable) to keep the index clean |
+| **Source filtering** | Pin retrieval scope to specific uploaded files per chat turn |
+| **Adjustable retrieval params** | Per-query control over retrieval limit (1–50), reranker top-N, and LLM temperature via the Settings panel |
 
-```mermaid
-graph TD
-    classDef default fill:#1e1e2e,stroke:#cba6f7,stroke-width:2px,color:#cdd6f4;
-    classDef database fill:#181825,stroke:#89b4fa,stroke-width:2px,color:#89b4fa;
-    classDef external fill:#11111b,stroke:#a6e3a1,stroke-width:2px,color:#a6e3a1;
+### Notebook Management
+| Feature | Description |
+|---|---|
+| **Isolated workspaces** | Every notebook is a self-contained project with its own documents, chat history, and system prompt |
+| **Notebook tags** | Label notebooks with filterable tags; filter the dashboard by any tag with one click |
+| **Custom system prompts** | Override the default assistant persona per notebook |
+| **Multi-notebook search** | Search across all notebooks from the dashboard — pure retrieval, no API key needed |
 
-    %% User Interaction
-    User((User)) -->|Uploads PDF/Doc| UI((Next.js Frontend))
-    User -->|Asks Question| UI
-    
-    %% API Gateway Layer
-    UI <-->|REST / SSE Stream| Go(Go Backend API)
+### Ingestion
+| Feature | Description |
+|---|---|
+| **Multi-file upload** | Drag-and-drop or browse; up to 50 MB per file, processed concurrently via a Go worker pool |
+| **URL ingestion** | Paste any `http/https` URL; the backend fetches, strips HTML, and ingests it as a source |
+| **Re-ingest** | Re-process any previously uploaded file from disk without re-uploading (after config changes or model swaps) |
+| **Format support** | PDF, DOCX, XLSX, PPTX, TXT, HTML — parsed and semantically chunked (~800 tokens, 800-char overlap) |
 
-    %% Ingestion Pipeline
-    subgraph INGESTION["Ingestion Pipeline (Local)"]
-        direction TB
-        Go -->|1. Parse Document| Parser[Concurrency Parser]
-        Parser -->|2. Intelligent Chunking| Chunker[Semantic Chunker]
-        Chunker <-->|3. Generate Embeddings| LocalEmb["LocalAI: Qwen3 Embedding Generator"]
-        LocalEmb -->|4. Upsert Vectors| Weaviate[(Weaviate Database)]:::database
-    end
+### Chat & UX
+| Feature | Description |
+|---|---|
+| **Streaming responses** | Tokens stream token-by-token via Server-Sent Events — no waiting for the full reply |
+| **Granular citations** | Every assistant response links claims to the exact source file and page number |
+| **Message edit & regenerate** | Hover any user message and click the pencil icon to truncate history and re-ask from that point |
+| **Export chat** | Download the full conversation as a Markdown file |
+| **Clear chat history** | Wipe the conversation without deleting your documents |
 
-    %% Retrieval Pipeline
-    subgraph RETRIEVAL["Retrieval Pipeline (Local RAG)"]
-        direction TB
-        Go -->|1. Hybrid Search| Weaviate
-        Weaviate -->|2. Top 20 Results| Go
-        Go <-->|3. Cross-Encode| LocalRerank["LocalAI: Qwen3 Reranker"]
-        LocalRerank -->|4. Final Top N Context| Go
-    end
-    
-    %% LLM Generation
-    subgraph GENERATION["Generation Layer (BYOK / Local via Langchain-Go)"]
-        direction LR
-        Go -->|"Streaming API"| OpenAI[OpenAI]:::external
-        Go -->|"Streaming API"| Gemini[Google Gemini]:::external
-        Go -->|"Streaming API"| Anthropic[Anthropic]:::external
-        Go -->|"Streaming API"| Groq[Groq]:::external
-        Go -->|"Streaming API"| OpenRouter[OpenRouter]:::external
-        Go -->|"Local API"| Ollama[Ollama]:::database
-        Go -->|"Local API"| LMStudio[LM Studio]:::database
-    end
+### LLM Flexibility
+| Feature | Description |
+|---|---|
+| **7 providers** | OpenAI, Anthropic, Google Gemini, Groq, OpenRouter, Ollama, LM Studio |
+| **BYOK** | API keys live exclusively in browser `localStorage` — the backend never sees them |
+| **Live model discovery** | Queries the provider API on key entry to enumerate real available models — no stale hardcoded lists |
+| **Model search** | Fuzzy-search through 300+ OpenRouter models instantly |
+| **Ollama auto-start** | `start.sh` detects a local Ollama installation and starts the server automatically |
+
+---
+
+## 🏗 Architecture
+
+GopherNotebook uses a three-stage RAG pipeline: **Ingest → Retrieve → Generate**.
+
+```
+┌──────────────────────────────────────────────────────────────────┐
+│                         INGEST PIPELINE                          │
+│                                                                  │
+│  File/URL ──► Go Worker Pool ──► Semantic Chunker (~800 tok)     │
+│                                        │                         │
+│                                  LocalAI (Qwen3 embed)           │
+│                                        │                         │
+│                      [Semantic dedup check via nearVector query]  │
+│                                        │                         │
+│                                  Weaviate (HNSW + BM25 index)    │
+└──────────────────────────────────────────────────────────────────┘
+
+┌──────────────────────────────────────────────────────────────────┐
+│                        RETRIEVE PIPELINE                         │
+│                                                                  │
+│  User query ──► [optional HyDE: generate fake answer, embed it]  │
+│              ──► Hybrid search (vector α=0.5 + BM25)             │
+│              ──► Top 20 candidates                               │
+│              ──► Cross-encoder reranker (Qwen3-Reranker-0.6B)    │
+│              ──► Top N ranked chunks                             │
+└──────────────────────────────────────────────────────────────────┘
+
+┌──────────────────────────────────────────────────────────────────┐
+│                        GENERATE PIPELINE                         │
+│                                                                  │
+│  Ranked chunks + system prompt + history ──► langchaingo         │
+│  ──► OpenAI / Anthropic / Gemini / Groq / OpenRouter             │
+│       / Ollama / LM Studio                                       │
+│  ──► Streaming SSE ──► Next.js frontend                          │
+└──────────────────────────────────────────────────────────────────┘
 ```
 
-### The Architecture Breakdown
-1. **Frontend**: A highly optimized Next.js 14+ application leveraging React Server Components, local storage state persistence, and Framer Motion glassmorphism for a premium UI experience.
-2. **Backend**: Written in Golang. Responsible for ingesting files, chunking structural text, coordinating vector database transactions, and managing the active websocket/SSE streams.
-3. **Database**: Weaviate containerized instance handling concurrent hybrid searches (Dense Vector + BM25 Lexical).
-4. **LocalAI**: Bootstraps the Qwen3 (`Q4_K_M`) GGUF embedding and reranking models onto CPU/GPU safely, running alongside the application.
+### Service Map
+
+| Service | Port | Technology | Purpose |
+|---|---|---|---|
+| **Frontend** | 3000 | Next.js 16 + React 19 | Chat UI, dashboard, settings |
+| **Backend** | 8090 | Go + Gin | REST API, SSE streaming, RAG orchestration |
+| **Weaviate** | 8080 | Weaviate 1.28 | Vector DB — HNSW + BM25 |
+| **LocalAI** | 8081 | LocalAI (llama.cpp) | Qwen3 embedding model |
+| **Reranker** | 8082 | llama.cpp server | Qwen3-Reranker-0.6B cross-encoder |
+
+---
+
+## 🛠 Tech Stack
+
+**Backend**
+- [Go 1.22+](https://go.dev/) — concurrent worker pool, streaming handlers
+- [Gin](https://github.com/gin-gonic/gin) — HTTP router
+- [langchaingo](https://github.com/tmc/langchaingo) — LLM provider abstraction
+- [tabula](https://github.com/tsawler/tabula) — document parsing (PDF, DOCX, XLSX, PPTX)
+- [Weaviate Go client](https://github.com/weaviate/weaviate-go-client) — vector DB operations
+- [google/uuid](https://github.com/google/uuid) — notebook/message IDs
+
+**Frontend**
+- [Next.js 16.2](https://nextjs.org/) + [React 19](https://react.dev/)
+- [Tailwind CSS v4](https://tailwindcss.com/) + [shadcn/ui](https://ui.shadcn.com/) (base-nova style)
+- [Framer Motion](https://www.framer.com/motion/) — animations
+- [date-fns](https://date-fns.org/), [react-markdown](https://github.com/remarkjs/react-markdown), [remark-gfm](https://github.com/remarkjs/remark-gfm)
+
+**Infrastructure**
+- [Weaviate](https://weaviate.io/) — vector database with HNSW + inverted index
+- [LocalAI](https://localai.io/) — self-hosted inference for the embedding model
+- [llama.cpp server](https://github.com/ggerganov/llama.cpp) — self-hosted cross-encoder reranker
+- [Docker Compose](https://docs.docker.com/compose/) — service orchestration
+
+**Models (GGUF, auto-downloaded on first run)**
+- `qwen3-embedding-0.6b-q4_k_m.gguf` — 1024-dim text embeddings
+- `Qwen3-Reranker-0.6B.Q4_K_M.gguf` — cross-encoder reranker
+
+---
+
+## 🚀 Quick Start
+
+### Prerequisites
+
+| Tool | Minimum Version | Install |
+|---|---|---|
+| Docker + Docker Compose | Latest | [docs.docker.com](https://docs.docker.com/get-docker/) |
+| Go | 1.22+ | [go.dev/dl](https://go.dev/dl/) |
+| Node.js / npm | 20+ | [nodejs.org](https://nodejs.org/) |
+
+> **Ollama** is optional — install from [ollama.com](https://ollama.com) for fully local, offline generation.
+
+### Install & Run
+
+```bash
+# 1. Clone
+git clone https://github.com/RobinMillford/GopherNotebook.git
+cd GopherNotebook
+
+# 2. Launch (downloads ~1.5 GB of models on first run)
+chmod +x start.sh
+./start.sh
+```
+
+The script handles everything:
+1. Checks and auto-installs missing dependencies (Go, Node, Docker) where possible
+2. Downloads Qwen3 embedding + reranker GGUF models if absent
+3. Starts Weaviate, LocalAI, and the reranker via Docker Compose and waits for health checks
+4. Starts the Go backend on `http://localhost:8090`
+5. Starts the Next.js frontend on `http://localhost:3000`
+6. Auto-starts Ollama if it is installed
+
+**Press `Ctrl+C`** to gracefully shut down all services.
+
+### Development (when Docker is already running)
+
+```bash
+# Backend
+cd backend && go run ./cmd/server
+
+# Frontend (separate terminal)
+cd frontend && npm run dev
+
+# Docker infra only
+docker compose up -d
+```
+
+---
+
+## ⚙️ Configuration
+
+All backend settings are driven by environment variables. Defaults work out of the box for local development.
+
+| Variable | Default | Description |
+|---|---|---|
+| `SERVER_PORT` | `8090` | Go backend HTTP port |
+| `LOCALAI_URL` | `http://localhost:8081` | LocalAI endpoint for embeddings |
+| `EMBEDDING_MODEL` | `qwen3-embed` | Model name registered in LocalAI |
+| `EMBEDDING_DIM` | `1024` | Output dimension of the embedding model |
+| `RERANKER_URL` | `http://localhost:8082` | llama.cpp reranker endpoint |
+| `RERANKER_MODEL` | `Qwen3-Reranker-0.6B` | Reranker model identifier |
+| `RERANKER_TOP_N` | `5` | Default number of chunks after reranking |
+| `WEAVIATE_HOST` | `localhost:8080` | Weaviate host:port |
+| `WEAVIATE_SCHEME` | `http` | `http` or `https` |
+| `NOTEBOOK_DATA_DIR` | `./data/notebooks` | Notebook JSON storage directory |
+| `UPLOAD_DIR` | `./data/uploads` | Uploaded files directory |
+| `SEMANTIC_DEDUP_THRESHOLD` | `0.03` | Cosine distance dedup threshold (set `0` to disable) |
+
+> API keys are browser-only — stored in `localStorage`, sent per-request via `X-API-Key` header. The backend never stores or logs them.
+
+---
+
+## 📖 Usage Guide
+
+### 1 — Create a Notebook
+Click **New Notebook** on the dashboard. Give it a name, an optional description, and tags. Tags let you filter the dashboard grid and keep projects organized.
+
+### 2 — Upload Documents
+Open a notebook and drag files onto the upload area, or click to browse. Supported formats: **PDF, DOCX, XLSX, PPTX, TXT, HTML** (up to 50 MB per file). The backend chunks and embeds them locally — a progress bar streams updates in real time.
+
+You can also **ingest a URL** (click the link icon in the sidebar) to fetch and process any public web page.
+
+To **re-process** a file (e.g. after changing the chunk size or embedding model), hover the file in the sidebar and click the refresh icon.
+
+### 3 — Configure Your LLM
+Click **Settings** in the left sidebar:
+
+- **Provider** — pick cloud (OpenAI, Anthropic, Gemini, Groq, OpenRouter) or local (Ollama, LM Studio)
+- **API Key** — paste your key; available models are fetched live. Keys never leave your browser.
+- **Model** — search and select from the live list
+- **System Prompt** — override the assistant persona for this notebook
+- **HyDE** — toggle Hypothetical Document Embedding for better recall on vague queries
+- **Retrieval Limit / Reranker Top N / Temperature** — fine-tune chunk retrieval and response creativity
+
+### 4 — Chat
+Ask your question and hit **Send**. Responses stream token-by-token. Citations link each claim back to the exact source file and page.
+
+- **Edit a message** — hover any user turn and click the pencil icon to truncate history and re-ask
+- **Export** — download the full conversation as Markdown via the icon at the top of the chat area
+- **Filter sources** — check/uncheck files in the sidebar to restrict retrieval scope (shown when 2+ sources exist)
+
+### 5 — Multi-Notebook Search
+From the dashboard, use the search bar at the top to find relevant chunks across *all* notebooks at once. No API key required — pure local retrieval. Click any result to navigate to that notebook.
 
 ---
 
 ## 🤖 Supported LLM Providers
 
-| Provider | How to get a key | Notes |
+| Provider | Local? | Key Source | Notes |
+|---|---|---|---|
+| **Ollama** | Yes | None | Auto-started by `start.sh`. Run `ollama pull <model>` to add models. |
+| **LM Studio** | Yes | None | Start the Local Server inside LM Studio first. |
+| **OpenAI** | No | [platform.openai.com](https://platform.openai.com/api-keys) | GPT-4o, o1, GPT-4 Turbo. Live model fetch. |
+| **Anthropic** | No | [console.anthropic.com](https://console.anthropic.com/) | Claude 3.7, 3.5 Sonnet, Haiku, Opus. Live model fetch. |
+| **Google Gemini** | No | [aistudio.google.com](https://aistudio.google.com/app/apikey) | Gemini 2.5 Flash, 2.0 Flash, 1.5 Pro. Live model fetch. |
+| **Groq** | No | [console.groq.com](https://console.groq.com/keys) | Llama 3.3, Mixtral, Gemma 2. Ultra-fast inference. Live model fetch. |
+| **OpenRouter** | No | [openrouter.ai/keys](https://openrouter.ai/keys) | 300+ models. Live model fetch + in-app search. |
+
+---
+
+## 📄 Supported File Types
+
+| Format | Extension | Parser |
 |---|---|---|
-| **Ollama** | [ollama.com](https://ollama.com) | **100% Local.** Auto-starts with `start.sh`. Run `ollama pull llama3.2` to get a model. |
-| **LM Studio** | [lmstudio.ai](https://lmstudio.ai/) | **100% Local.** GUI-based model runner. Start the "Local Server" inside the app. |
-| **OpenAI** | [platform.openai.com](https://platform.openai.com/api-keys) | GPT-4o, o1, and more. Live model fetch. |
-| **Google Gemini** | [aistudio.google.com](https://aistudio.google.com/app/apikey) | Gemini 2.5 Flash, 2.0 Flash, 1.5 Pro. Live model fetch. |
-| **Anthropic** | [console.anthropic.com](https://console.anthropic.com/) | Claude 3.7, 3.5 Sonnet/Haiku. Live model fetch. |
-| **Groq** | [console.groq.com](https://console.groq.com/keys) | Llama 3.x, Gemma 2, Mixtral. Ultra-fast inference. Live model fetch. |
-| **OpenRouter** | [openrouter.ai/keys](https://openrouter.ai/keys) | 300+ models from all providers. Live model fetch + search. |
-
-> **Tip:** For OpenRouter, use the built-in model search bar — it has hundreds of available models sorted by newest first.
-
----
-
-## 🚀 Quick Start Guide
-
-We have created an all-in-one setup script that makes deploying GopherNotebook completely effortless. It automatically downloads the required local LLM weights, checks your dependencies, and spins up the system.
-
-### Prerequisites
-- [Docker](https://docs.docker.com/get-docker/) & Docker Compose
-- [Golang 1.22+](https://go.dev/dl/)
-- [Node.js (npm)](https://nodejs.org/)
-
-### Installation & Run
-1. **Clone the repository:**
-   ```bash
-   git clone https://github.com/RobinMillford/GopherNotebook.git
-   cd GopherNotebook
-   ```
-
-2. **Execute the launch script:**
-   ```bash
-   ./start.sh
-   # On first launch, the script will automatically download the required ~1.5GB Qwen3 models.
-   # It will then install NPM dependencies, boot Docker Compose, and launch the web servers.
-   ```
-
-3. **Access the Application:**
-   Open your browser and navigate to: [http://localhost:3000](http://localhost:3000)
-
-4. **Shutdown:**
-   To safely terminate the backend, frontend, and Docker instances, press `Ctrl+C` inside the terminal where you ran `./start.sh`.
-
----
-
-## ⚙️ How to use Notebooks
-1. **Create a Notebook**: Think of a 'Notebook' as a specific digital brain for a specific task (e.g., "Q3 Financial Analysis" or "Legal Case File A").
-2. **Upload Documents**: Click into the Notebook and drag/drop your PDFs, Word Docs, or text files. The Go backend will chunk and embed them locally.
-3. **Configure your LLM**: Click **LLM Settings** in the left sidebar.
-   - Pick a **provider** using the pill buttons. Choose a cloud provider (OpenAI, Gemini) OR a local provider (Ollama, LM Studio).
-   - If using a cloud provider, paste your **API key** — the app will auto-fetch available models instantly.
-   - If using a local provider, the app will automatically ping your local server and show a 🟢 banner if it's connected successfully.
-   - **Search and select a model** from the live list.
-   - Your API key is **never** sent to our servers — it lives exclusively in your local browser storage.
-4. **Ask Questions**: Ask anything! The engine retrieves the most semantically relevant passages from your documents, cross-references them, and generates a cited response streamed back in real-time.
+| PDF | `.pdf` | tabula |
+| Word | `.docx` | tabula |
+| Excel | `.xlsx` | tabula |
+| PowerPoint | `.pptx` | tabula |
+| Plain text | `.txt` | native |
+| HTML / Web pages | `.html` | native (also via URL ingest) |
 
 ---
 
 ## 🛡 Security & Privacy
-GopherNotebook is designed for paranoid operation environments.
-- **Data Ingestion**: Your files are chunked and vectorized locally. Weaviate and the embedding process have no access to the internet.
-- **API Keys**: Keys are stored in your browser's `localStorage` only. They are sent directly to the LLM provider per-request via your browser — the GopherNotebook backend never stores or logs them.
-- **Provider Passthrough**: We use `langchain-go` to connect entirely statelessly to LLM providers. API limits, safety protocols, and privacy policies rest entirely within your configured vendor parameters.
+
+- **Embeddings are local.** Files are chunked and vectorized on your machine. LocalAI and Weaviate have no internet access by default.
+- **API keys are browser-only.** Stored in `localStorage`. Sent directly to the LLM provider per-request. The Go backend never receives, stores, or logs them.
+- **SSRF prevention.** The URL ingestion endpoint validates `http`/`https` scheme before fetching.
+- **Path traversal prevention.** File names are sanitized with `filepath.Base` before any disk access.
+- **No telemetry.** GopherNotebook sends no analytics or usage data anywhere.
 
 ---
 
-## 📋 Changelog
+## 🗺 Roadmap
 
-### Latest Updates
-- **100% Local LLM Generation**: Added fully offline support for **Ollama** and **LM Studio**. Chat with Llama 3.2, Qwen2.5, DeepSeek, and more directly on your machine.
-- **Ollama Auto-Start**: The `start.sh` script now automatically runs `ollama serve` in the background if it detects Ollama is installed.
-- **Groq support**: Full streaming chat via Groq's ultra-fast inference API (Llama 3.3, Gemma 2, Mixtral).
-- **OpenRouter support**: Access 300+ models from a single API key with live model discovery.
-- **Live model fetching**: All 5 providers now fetch real-time model lists when you enter your API key — no more stale hardcoded lists.
-- **Redesigned LLM Settings UI**: Card-based model picker with clear selection highlighting, provider pills, API key show/hide toggle, and a live active-config summary footer.
-- **Model search**: Filter models instantly by name or ID directly inside the settings panel.
-- **Persistent settings**: API key, provider, and model selection are auto-saved to browser storage on dialog close.
-- **Startup reliability**: `start.sh` now frees ports 8090 and 3000 before launching to prevent address-in-use crashes on restart.
-- **Hydration fix**: Added `suppressHydrationWarning` to resolve React hydration mismatch caused by browser extensions (e.g. LanguageTool).
+Known gaps and improvement areas. Contributions are welcome on any of these.
+
+### Short-term
+- [ ] **GPU acceleration** — expose `--gpu-layers` to LocalAI and the reranker container via env var (currently CPU-only)
+- [ ] **Document summarization** — auto-generate a 1-paragraph summary per file after ingestion
+- [ ] **Notebook export/import** — archive a notebook (metadata + uploads) as a zip; import on another machine
+- [ ] **Conversation branching** — fork chat history at any message to explore multiple response paths
+- [ ] **Dark / light theme toggle** — UI is currently dark-only
+
+### Medium-term
+- [ ] **Optional auth** — single-user password gate for LAN-exposed deployments
+- [ ] **Streaming rerank indicator** — show a "Reranking…" status in the UI while the cross-encoder runs
+- [ ] **Weaviate multi-tenancy** — isolate each notebook into a separate Weaviate tenant for stronger data boundaries
+- [ ] **Pluggable embedding models** — swap Qwen3-Embed for any GGUF embedding model without rebuilding Docker images
+- [ ] **Auto conversation titles** — generate a short title from the first user message
+- [ ] **Keyboard shortcuts** — `/` focus search, `Ctrl+Enter` send, `Esc` close dialogs
+
+### Long-term
+- [ ] **Multi-modal ingestion** — image OCR and audio transcription via Whisper
+- [ ] **Agent mode** — let the LLM decide which notebooks to search and when to stop retrieving
+- [ ] **REST API SDK** — typed Python/TypeScript client for programmatic notebook and chat access
+- [ ] **Collaborative notebooks** — real-time multi-user chat on a shared notebook
+- [ ] **OIDC / SSO** — enterprise-ready auth for team deployments
+
+---
+
+## 🏗 Project Structure
+
+```
+GopherNotebook/
+├── backend/
+│   ├── cmd/server/          # Entry point (main.go)
+│   └── internal/
+│       ├── api/             # Gin handlers and router
+│       ├── config/          # Env-based configuration
+│       ├── db/              # Weaviate schema + query helpers
+│       ├── generate/        # langchaingo LLM streaming + HyDE
+│       ├── ingest/          # Parsing, chunking, embedding, worker pool
+│       ├── notebook/        # CRUD + message history (JSON on disk)
+│       └── retrieve/        # Hybrid search + reranking
+├── frontend/
+│   └── src/
+│       ├── app/
+│       │   ├── dashboard/   # Notebook grid, tag filter, global search
+│       │   ├── notebook/    # Chat UI, file upload, settings panel
+│       │   └── api/models/  # Route handler for live model enumeration
+│       ├── components/ui/   # shadcn/ui components
+│       └── lib/api.ts       # Typed API client
+├── models/                  # GGUF model files (git-ignored, auto-downloaded)
+├── data/                    # Weaviate volumes + notebook JSON (git-ignored)
+├── scripts/
+│   └── download_models.sh   # Model downloader
+├── docker-compose.yml
+└── start.sh                 # Full-stack launcher
+```
 
 ---
 
 ## 🤝 Contributing
-Contributions are actively welcomed! Whether it is adding new document parsers to the Golang core, implementing new UI features, or optimizing the Docker infrastructure.
-1. Fork the Project
-2. Create your Feature Branch (`git checkout -b feature/AmazingFeature`)
-3. Commit your Changes (`git commit -m 'Add some AmazingFeature'`)
-4. Push to the Branch (`git push origin feature/AmazingFeature`)
-5. Open a Pull Request
+
+Contributions are welcome! Please read [CONTRIBUTING.md](CONTRIBUTING.md) first.
+
+```bash
+# Backend tests
+cd backend && go test ./...
+
+# Backend lint
+cd backend && go vet ./...
+
+# Frontend type-check + build
+cd frontend && npm run build
+```
+
+**Branch naming:** `feature/<name>`, `fix/<name>`, `docs/<name>`  
+**Commit style:** [Conventional Commits](https://www.conventionalcommits.org/) — `feat:`, `fix:`, `docs:`, `chore:`, etc.
+
+Please open an issue before starting large PRs to align on approach.
 
 ---
 
 ## 📄 License
-Distributed under the MIT License. See `LICENSE` for more information.
+
+Distributed under the **MIT License**. See [LICENSE](LICENSE) for details.
+
+---
+
+<div align="center">
+Made with Go and Next.js &nbsp;·&nbsp;
+<a href="https://github.com/RobinMillford/GopherNotebook/issues">Report a bug</a> &nbsp;·&nbsp;
+<a href="https://github.com/RobinMillford/GopherNotebook/issues">Request a feature</a>
+</div>

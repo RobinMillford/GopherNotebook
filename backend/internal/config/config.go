@@ -29,6 +29,9 @@ type Config struct {
 
 	// Upload
 	UploadDir string
+
+	// Semantic deduplication (cosine distance threshold; 0 = disabled)
+	SemanticDedupThreshold float64
 }
 
 // Load reads configuration from environment variables with sensible defaults.
@@ -43,8 +46,9 @@ func Load() *Config {
 		RerankerTopN:   envOrDefaultInt("RERANKER_TOP_N", 5),
 		WeaviateHost:   envOrDefault("WEAVIATE_HOST", "localhost:8080"),
 		WeaviateScheme: envOrDefault("WEAVIATE_SCHEME", "http"),
-		NotebookDataDir: envOrDefault("NOTEBOOK_DATA_DIR", "./data/notebooks"),
-		UploadDir:       envOrDefault("UPLOAD_DIR", "./data/uploads"),
+		NotebookDataDir:        envOrDefault("NOTEBOOK_DATA_DIR", "./data/notebooks"),
+		UploadDir:              envOrDefault("UPLOAD_DIR", "./data/uploads"),
+		SemanticDedupThreshold: envOrDefaultFloat("SEMANTIC_DEDUP_THRESHOLD", 0.03),
 	}
 }
 
@@ -59,6 +63,15 @@ func envOrDefaultInt(key string, fallback int) int {
 	if v := os.Getenv(key); v != "" {
 		if n, err := strconv.Atoi(v); err == nil {
 			return n
+		}
+	}
+	return fallback
+}
+
+func envOrDefaultFloat(key string, fallback float64) float64 {
+	if v := os.Getenv(key); v != "" {
+		if f, err := strconv.ParseFloat(v, 64); err == nil {
+			return f
 		}
 	}
 	return fallback

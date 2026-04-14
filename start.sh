@@ -1,219 +1,293 @@
 #!/bin/bash
 
 # GopherNotebook Quickstart Script
-# This script configures, installs dependencies, and launches the entire stack.
+# Installs missing dependencies, downloads models, starts all services.
+#
+# Usage:
+#   ./start.sh              # full stack (Docker + backend + frontend)
+#   ./start.sh --no-docker  # skip Docker (infra already running)
 
 set -e
 
-# Colors
+# ─── Colors ────────────────────────────────────────────────────────────────────
 GREEN='\033[0;32m'
 BLUE='\033[0;34m'
 YELLOW='\033[1;33m'
 RED='\033[0;31m'
+CYAN='\033[0;36m'
+BOLD='\033[1m'
 NC='\033[0m'
 
-echo -e "${BLUE}=======================================${NC}"
-echo -e "${BLUE} 🚀 Starting GopherNotebook...${NC}"
-echo -e "${BLUE}=======================================${NC}"
+# ─── Args ──────────────────────────────────────────────────────────────────────
+SKIP_DOCKER=false
+for arg in "$@"; do
+    case $arg in
+        --no-docker) SKIP_DOCKER=true ;;
+        --help|-h)
+            echo "Usage: $0 [--no-docker]"
+            echo "  --no-docker   Skip Docker Compose (use when infra is already running)"
+            exit 0
+            ;;
+    esac
+done
 
-# 1. Check prerequisites
-echo -e "${YELLOW}Checking prerequisites...${NC}"
+# ─── Banner ────────────────────────────────────────────────────────────────────
+echo ""
+echo -e "${BLUE}${BOLD}╔══════════════════════════════════════════╗${NC}"
+echo -e "${BLUE}${BOLD}║        🐀  GopherNotebook  🐀           ║${NC}"
+echo -e "${BLUE}${BOLD}╚══════════════════════════════════════════╝${NC}"
+echo ""
 
+# ─── Detect OS ─────────────────────────────────────────────────────────────────
 OS="$(uname -s)"
 case "${OS}" in
-    Linux*)     MACHINE=Linux;;
-    Darwin*)    MACHINE=Mac;;
-    CYGWIN*|MINGW*|MSYS*) MACHINE=Windows;;
-    *)          MACHINE=Other;;
+    Linux*)   MACHINE=Linux ;;
+    Darwin*)  MACHINE=Mac ;;
+    CYGWIN*|MINGW*|MSYS*) MACHINE=Windows ;;
+    *)        MACHINE=Other ;;
 esac
 
-# Check and install Go if needed
-if ! command -v go &> /dev/null; then
-    echo -e "${YELLOW}'go' is not installed. Attempting to install Go for ${MACHINE}...${NC}"
+# ─── Helper: wait for HTTP endpoint ────────────────────────────────────────────
+wait_for() {
+    local url="$1"
+    local label="$2"
+    local max_wait="${3:-120}"
+    local elapsed=0
+    printf "${YELLOW}  Waiting for ${label}...${NC}"
+    while ! curl -sf "$url" > /dev/null 2>&1; do
+        sleep 2
+        elapsed=$((elapsed + 2))
+        printf "."
+        if [ "$elapsed" -ge "$max_wait" ]; then
+            echo ""
+            echo -e "${RED}✗ Timed out waiting for ${label} (${max_wait}s). Check Docker logs.${NC}"
+            exit 1
+        fi
+    done
+    echo -e " ${GREEN}ready${NC}"
+}
+
+# ─── 1. Prerequisites ──────────────────────────────────────────────────────────
+echo -e "${CYAN}[1/6]${NC} ${BOLD}Checking prerequisites...${NC}"
+
+check_or_install_go() {
+    if command -v go &> /dev/null; then
+        echo -e "  ${GREEN}✓${NC} Go $(go version | awk '{print $3}')"
+        return
+    fi
+    echo -e "  ${YELLOW}Go not found — installing...${NC}"
     if [ "$MACHINE" = "Linux" ]; then
-        GO_VERSION="1.22.2"
-        echo "Downloading Go ${GO_VERSION}..."
-        curl -LO "https://go.dev/dl/go${GO_VERSION}.linux-amd64.tar.gz" || wget "https://go.dev/dl/go${GO_VERSION}.linux-amd64.tar.gz"
+        local ver="1.22.2"
+        curl -sLO "https://go.dev/dl/go${ver}.linux-amd64.tar.gz"
         rm -rf "$HOME/.local/go"
         mkdir -p "$HOME/.local"
-        tar -C "$HOME/.local" -xzf "go${GO_VERSION}.linux-amd64.tar.gz"
-        rm "go${GO_VERSION}.linux-amd64.tar.gz"
+        tar -C "$HOME/.local" -xzf "go${ver}.linux-amd64.tar.gz"
+        rm "go${ver}.linux-amd64.tar.gz"
         export PATH="$PATH:$HOME/.local/go/bin"
-        if [ -f "$HOME/.bashrc" ] && ! grep -q "\.local/go/bin" "$HOME/.bashrc"; then
+        grep -q '\.local/go/bin' "$HOME/.bashrc" 2>/dev/null || \
             echo 'export PATH=$PATH:$HOME/.local/go/bin' >> "$HOME/.bashrc"
-        fi
-        echo -e "${GREEN}✓ Go installed successfully to ~/.local/go.${NC}"
+        echo -e "  ${GREEN}✓${NC} Go installed to ~/.local/go"
     elif [ "$MACHINE" = "Mac" ]; then
-        if ! command -v brew &> /dev/null; then echo -e "${RED}Homebrew not found. Please install brew or Go manually.${NC}"; exit 1; fi
+        command -v brew &>/dev/null || { echo -e "${RED}Homebrew required. Install from https://brew.sh${NC}"; exit 1; }
         brew install go
     elif [ "$MACHINE" = "Windows" ]; then
         winget install GoLang.Go
-        echo -e "${YELLOW}Please restart your terminal to apply the new PATH variables after Winget installations.${NC}"
     else
-        echo -e "${RED}Error: 'go' is not installed. Auto-install is only supported on Linux, Mac, and Windows.${NC}"
-        exit 1
+        echo -e "${RED}Please install Go manually: https://go.dev/dl${NC}"; exit 1
     fi
-fi
+}
 
-# Check and install Node.js/npm if needed
-if ! command -v npm &> /dev/null; then
-    echo -e "${YELLOW}'npm' is not installed. Attempting to install Node.js for ${MACHINE}...${NC}"
+check_or_install_node() {
+    if command -v npm &> /dev/null; then
+        echo -e "  ${GREEN}✓${NC} Node $(node --version) / npm $(npm --version)"
+        return
+    fi
+    echo -e "  ${YELLOW}npm not found — installing Node.js via nvm...${NC}"
     if [ "$MACHINE" = "Linux" ]; then
         curl -o- https://raw.githubusercontent.com/nvm-sh/nvm/v0.39.7/install.sh | bash
         export NVM_DIR="$HOME/.nvm"
+        # shellcheck source=/dev/null
         [ -s "$NVM_DIR/nvm.sh" ] && \. "$NVM_DIR/nvm.sh"
-        nvm install 20
-        nvm use 20
-        echo -e "${GREEN}✓ Node.js and npm installed successfully.${NC}"
+        nvm install 20 && nvm use 20
+        echo -e "  ${GREEN}✓${NC} Node.js installed"
     elif [ "$MACHINE" = "Mac" ]; then
-        if ! command -v brew &> /dev/null; then echo -e "${RED}Homebrew not found. Please install Node manually.${NC}"; exit 1; fi
+        command -v brew &>/dev/null || { echo -e "${RED}Homebrew required.${NC}"; exit 1; }
         brew install node
     elif [ "$MACHINE" = "Windows" ]; then
         winget install OpenJS.NodeJS
     else
-        echo -e "${RED}Error: 'npm' is not installed. Auto-install is only supported on Linux, Mac, and Windows.${NC}"
-        exit 1
+        echo -e "${RED}Please install Node.js manually: https://nodejs.org${NC}"; exit 1
     fi
-fi
+}
 
-# Check and install Docker if needed
-if ! command -v docker &> /dev/null; then
-    echo -e "${YELLOW}'docker' is not installed. Attempting to install Docker for ${MACHINE}...${NC}"
+check_or_install_docker() {
+    if command -v docker &> /dev/null; then
+        echo -e "  ${GREEN}✓${NC} Docker $(docker --version | awk '{print $3}' | tr -d ',')"
+        return
+    fi
+    echo -e "  ${YELLOW}Docker not found — installing...${NC}"
     if [ "$MACHINE" = "Linux" ]; then
-        echo -e "${YELLOW}Note: Docker installation may require your sudo password.${NC}"
         curl -fsSL https://get.docker.com -o get-docker.sh
-        sudo sh get-docker.sh
-        rm get-docker.sh
-        sudo usermod -aG docker $USER
-        echo -e "${GREEN}✓ Docker installed successfully.${NC}"
-        echo -e "${YELLOW}IMPORTANT: You might need to restart your terminal or run 'su - $USER' for Docker group permissions to apply.${NC}"
+        sudo sh get-docker.sh && rm get-docker.sh
+        sudo usermod -aG docker "$USER"
+        echo -e "  ${GREEN}✓${NC} Docker installed. You may need to restart your session for group permissions."
     elif [ "$MACHINE" = "Mac" ]; then
-        if ! command -v brew &> /dev/null; then echo -e "${RED}Homebrew not found. Please install Docker manually.${NC}"; exit 1; fi
+        command -v brew &>/dev/null || { echo -e "${RED}Homebrew required.${NC}"; exit 1; }
         brew install --cask docker
-        echo -e "${YELLOW}IMPORTANT: Open Docker Desktop from your Applications folder to finish setup.${NC}"
+        echo -e "  ${YELLOW}Open Docker Desktop from Applications to finish setup, then re-run this script.${NC}"
+        exit 0
     elif [ "$MACHINE" = "Windows" ]; then
         winget install Docker.DockerDesktop
-        echo -e "${YELLOW}IMPORTANT: You must restart Windows mapping and open Docker Desktop to finish setup.${NC}"
+        echo -e "  ${YELLOW}Restart Windows and open Docker Desktop, then re-run this script.${NC}"
+        exit 0
     else
-        echo -e "${RED}Error: 'docker' is not installed. Auto-install is only supported on Linux, Mac, and Windows.${NC}"
-        exit 1
+        echo -e "${RED}Please install Docker manually: https://docs.docker.com/get-docker${NC}"; exit 1
     fi
+}
+
+check_or_install_go
+check_or_install_node
+if [ "$SKIP_DOCKER" = false ]; then
+    check_or_install_docker
 fi
 
-echo -e "${GREEN}✓ All prerequisites met.${NC}"
+# ─── 2. Models ─────────────────────────────────────────────────────────────────
+echo ""
+echo -e "${CYAN}[2/6]${NC} ${BOLD}Checking local AI models...${NC}"
 
-# 2. Check and Download Models
-MODELS_DIR="./models"
-MODEL_1="$MODELS_DIR/qwen3-embedding-0.6b-q4_k_m.gguf"
-MODEL_2="$MODELS_DIR/Qwen3-Reranker-0.6B.Q4_K_M.gguf"
+MODEL_1="./models/qwen3-embedding-0.6b-q4_k_m.gguf"
+MODEL_2="./models/Qwen3-Reranker-0.6B.Q4_K_M.gguf"
 
-if [[ ! -f "$MODEL_1" ]] || [[ ! -f "$MODEL_2" ]]; then
-    echo -e "${YELLOW}Local AI Models are missing. Initiating download...${NC}"
-    if [[ -f "./scripts/download_models.sh" ]]; then
+if [ -f "$MODEL_1" ] && [ -f "$MODEL_2" ]; then
+    echo -e "  ${GREEN}✓${NC} Models present"
+else
+    echo -e "  ${YELLOW}Models missing — downloading (~1.5 GB)...${NC}"
+    if [ -f "./scripts/download_models.sh" ]; then
         bash ./scripts/download_models.sh
     else
-        echo -e "${RED}Error: scripts/download_models.sh not found.${NC}"
+        echo -e "  ${RED}scripts/download_models.sh not found. Please download models manually.${NC}"
         exit 1
     fi
-else
-    echo -e "${GREEN}✓ Local AI Models found.${NC}"
 fi
 
-# Determine the correct docker compose command
-if docker compose version &> /dev/null; then
-    DOCKER_COMPOSE_CMD="docker compose"
-elif docker-compose --version &> /dev/null; then
-    DOCKER_COMPOSE_CMD="docker-compose"
+# ─── 3. Docker Compose ─────────────────────────────────────────────────────────
+echo ""
+echo -e "${CYAN}[3/6]${NC} ${BOLD}Starting infrastructure (Weaviate + LocalAI + Reranker)...${NC}"
+
+if [ "$SKIP_DOCKER" = true ]; then
+    echo -e "  ${YELLOW}--no-docker set. Skipping Docker Compose.${NC}"
 else
-    echo -e "${RED}Error: Docker Compose is not installed or not in PATH.${NC}"
-    exit 1
+    # Pick compose command
+    if docker compose version &> /dev/null 2>&1; then
+        DC="docker compose"
+    elif docker-compose --version &> /dev/null 2>&1; then
+        DC="docker-compose"
+    else
+        echo -e "  ${RED}Docker Compose not found. Install it and try again.${NC}"; exit 1
+    fi
+
+    $DC up -d
+
+    # Wait for services
+    wait_for "http://localhost:8080/v1/.well-known/ready" "Weaviate"     120
+    wait_for "http://localhost:8081/readyz"                "LocalAI"      180
+    wait_for "http://localhost:8082/health"                "Reranker"     120
 fi
 
-# 3. Free ports before starting (kill any stale processes)
-echo -e "${YELLOW}Freeing ports 8090 and 3000...${NC}"
-fuser -k 8090/tcp 2>/dev/null || true
-fuser -k 3000/tcp 2>/dev/null || true
-sleep 1
+# ─── 4. Ollama (optional) ──────────────────────────────────────────────────────
+echo ""
+echo -e "${CYAN}[4/6]${NC} ${BOLD}Checking Ollama (optional)...${NC}"
 
-# 4. Auto-start Ollama if installed and not already running
 OLLAMA_PID=""
 if command -v ollama &> /dev/null; then
     if curl -sf http://localhost:11434/api/tags > /dev/null 2>&1; then
-        echo -e "${GREEN}✓ Ollama is already running.${NC}"
+        echo -e "  ${GREEN}✓${NC} Ollama already running"
     else
-        echo -e "${YELLOW}Ollama is installed. Starting ollama serve in the background...${NC}"
+        echo -e "  ${YELLOW}Starting ollama serve...${NC}"
         ollama serve > /dev/null 2>&1 &
         OLLAMA_PID=$!
-        # Wait up to 5s for it to come up
-        for i in $(seq 1 5); do
+        for i in $(seq 1 10); do
             sleep 1
             if curl -sf http://localhost:11434/api/tags > /dev/null 2>&1; then
-                echo -e "${GREEN}✓ Ollama is now running (PID $OLLAMA_PID).${NC}"
+                echo -e "  ${GREEN}✓${NC} Ollama started (PID $OLLAMA_PID)"
                 break
+            fi
+            if [ "$i" -eq 10 ]; then
+                echo -e "  ${YELLOW}Ollama did not respond in time — continuing without it.${NC}"
             fi
         done
     fi
 else
-    echo -e "${YELLOW}ℹ Ollama not found (optional). Install from https://ollama.com to use local open-source models.${NC}"
+    echo -e "  ${YELLOW}Ollama not installed (optional). Get it at https://ollama.com${NC}"
 fi
 
-# 5. Start Core Infrastructure (Docker Compose)
-echo -e "${YELLOW}Starting core infrastructure (Weaviate & LocalAI)...${NC}"
-$DOCKER_COMPOSE_CMD up -d
+# ─── 5. Free ports ─────────────────────────────────────────────────────────────
+echo ""
+echo -e "${CYAN}[5/6]${NC} ${BOLD}Releasing ports 8090 and 3000...${NC}"
+fuser -k 8090/tcp 2>/dev/null || true
+fuser -k 3000/tcp 2>/dev/null || true
+sleep 1
+echo -e "  ${GREEN}✓${NC} Ports free"
 
-# Process management for cleanup
+# ─── Cleanup trap ──────────────────────────────────────────────────────────────
 cleanup() {
-    echo -e "\n${YELLOW}Shutting down GopherNotebook Engine...${NC}"
-    
-    if [ -n "$FRONTEND_PID" ]; then
-        kill $FRONTEND_PID 2>/dev/null || true
-    fi
-    if [ -n "$BACKEND_PID" ]; then
-        kill $BACKEND_PID 2>/dev/null || true
-    fi
+    echo ""
+    echo -e "${YELLOW}Shutting down GopherNotebook...${NC}"
+    [ -n "$FRONTEND_PID" ] && kill "$FRONTEND_PID" 2>/dev/null || true
+    [ -n "$BACKEND_PID"  ] && kill "$BACKEND_PID"  2>/dev/null || true
     if [ -n "$OLLAMA_PID" ]; then
-        echo -e "${YELLOW}Stopping Ollama (started by this script)...${NC}"
-        kill $OLLAMA_PID 2>/dev/null || true
+        echo -e "  ${YELLOW}Stopping Ollama (started by this script)...${NC}"
+        kill "$OLLAMA_PID" 2>/dev/null || true
     fi
-    
-    echo -e "${YELLOW}Stopping docker containers...${NC}"
-    $DOCKER_COMPOSE_CMD stop
-    echo -e "${GREEN}✓ Shutdown complete. Goodbye!${NC}"
-    exit
+    if [ "$SKIP_DOCKER" = false ] && [ -n "$DC" ]; then
+        echo -e "  ${YELLOW}Stopping Docker services...${NC}"
+        $DC stop
+    fi
+    echo -e "${GREEN}Shutdown complete. Goodbye!${NC}"
+    exit 0
 }
+trap cleanup SIGINT SIGTERM
 
-trap cleanup SIGINT SIGTERM EXIT
+# ─── 6. App servers ────────────────────────────────────────────────────────────
+echo ""
+echo -e "${CYAN}[6/6]${NC} ${BOLD}Starting application servers...${NC}"
 
-# 6. Start Go Backend
-echo -e "${YELLOW}Starting Go Backend (http://localhost:8090)...${NC}"
+# Backend
+echo -e "  Starting Go backend..."
 cd backend
-go mod tidy
+go mod tidy -e > /dev/null 2>&1 || true
 go run ./cmd/server > server.log 2>&1 &
 BACKEND_PID=$!
 cd ..
 
-# 7. Start Next.js Frontend
-echo -e "${YELLOW}Starting Next.js Frontend (http://localhost:3000)...${NC}"
+# Wait for backend health
+wait_for "http://localhost:8090/health" "Backend" 30
+
+# Frontend
+echo -e "  Starting Next.js frontend..."
 cd frontend
 if [ ! -d "node_modules" ]; then
-    echo -e "${YELLOW}Installing frontend dependencies...${NC}"
-    npm install
+    echo -e "  ${YELLOW}Installing npm dependencies (first run)...${NC}"
+    npm install --silent
 fi
 npm run dev > frontend.log 2>&1 &
 FRONTEND_PID=$!
 cd ..
 
-echo -e "${BLUE}=======================================${NC}"
-echo -e "${GREEN}🌟 GopherNotebook is LIVE 🌟${NC}"
-echo -e "Frontend: ${GREEN}http://localhost:3000${NC}"
-echo -e "Backend:  ${GREEN}http://localhost:8090${NC}"
-echo -e ""
-echo -e "Logs are being written to:"
-echo -e " - backend/server.log"
-echo -e " - frontend/frontend.log"
-echo -e ""
-echo -e "${YELLOW}Press Ctrl+C to stop all services gracefully.${NC}"
-echo -e "${BLUE}=======================================${NC}"
+# ─── Ready banner ──────────────────────────────────────────────────────────────
+echo ""
+echo -e "${BLUE}${BOLD}╔══════════════════════════════════════════╗${NC}"
+echo -e "${BLUE}${BOLD}║         🌟  Stack is LIVE  🌟            ║${NC}"
+echo -e "${BLUE}${BOLD}╠══════════════════════════════════════════╣${NC}"
+echo -e "${BLUE}${BOLD}║${NC}  App       ${GREEN}http://localhost:3000${NC}       ${BLUE}${BOLD}║${NC}"
+echo -e "${BLUE}${BOLD}║${NC}  API       ${GREEN}http://localhost:8090${NC}       ${BLUE}${BOLD}║${NC}"
+echo -e "${BLUE}${BOLD}║${NC}  Weaviate  ${GREEN}http://localhost:8080${NC}       ${BLUE}${BOLD}║${NC}"
+echo -e "${BLUE}${BOLD}╠══════════════════════════════════════════╣${NC}"
+echo -e "${BLUE}${BOLD}║${NC}  Logs: backend/server.log              ${BLUE}${BOLD}║${NC}"
+echo -e "${BLUE}${BOLD}║${NC}        frontend/frontend.log           ${BLUE}${BOLD}║${NC}"
+echo -e "${BLUE}${BOLD}╠══════════════════════════════════════════╣${NC}"
+echo -e "${BLUE}${BOLD}║${NC}  Press ${YELLOW}Ctrl+C${NC} to stop all services    ${BLUE}${BOLD}║${NC}"
+echo -e "${BLUE}${BOLD}╚══════════════════════════════════════════╝${NC}"
+echo ""
 
-# Wait indefinitely for signals
 wait

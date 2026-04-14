@@ -35,7 +35,7 @@ func NewServer(
 		nbManager:  nbManager,
 		weaviate:   weaviateClient,
 		embedder:   embedder,
-		workerPool: ingest.NewWorkerPool(weaviateClient, embedder),
+		workerPool: ingest.NewWorkerPool(weaviateClient, embedder, float32(cfg.SemanticDedupThreshold)),
 		searcher:   retrieve.NewHybridSearcher(weaviateClient, embedder),
 		reranker:   retrieve.NewReranker(cfg.RerankerURL, cfg.RerankerModel),
 		generator:  generate.NewGenerator(),
@@ -59,19 +59,26 @@ func (s *Server) setupRouter() {
 		api.GET("/notebooks", s.ListNotebooks)
 		api.POST("/notebooks", s.CreateNotebook)
 		api.GET("/notebooks/:id", s.GetNotebook)
+		api.PATCH("/notebooks/:id", s.UpdateNotebook)
 		api.DELETE("/notebooks/:id", s.DeleteNotebook)
 
 		// Sources
 		api.GET("/notebooks/:id/sources", s.ListSources)
 		api.DELETE("/notebooks/:id/sources/:filename", s.DeleteSource)
+		api.POST("/notebooks/:id/sources/:filename/reingest", s.ReIngestSource)
 
 		// Ingestion
 		api.POST("/notebooks/:id/upload", s.UploadFiles)
+		api.POST("/notebooks/:id/ingest-url", s.IngestURL)
 		api.GET("/notebooks/:id/ingest/progress", s.IngestProgress)
 
 		// Chat
 		api.POST("/notebooks/:id/chat", s.Chat)
 		api.DELETE("/notebooks/:id/chat", s.ClearChatHistory)
+		api.POST("/notebooks/:id/messages/truncate", s.TruncateMessages)
+
+		// Global search
+		api.POST("/search", s.GlobalSearch)
 	}
 
 	// Health check

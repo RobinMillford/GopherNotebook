@@ -14,7 +14,39 @@ import (
 )
 // ChatRequest is the JSON body for a chat request.
 type ChatRequest struct {
-	Query string `json:"query" binding:"required"`
+	Query          string   `json:"query" binding:"required"`
+	RetrievalLimit *int     `json:"retrievalLimit"`
+	RerankerTopN   *int     `json:"rerankerTopN"`
+	Temperature    *float64 `json:"temperature"`
+	SourceFilter   []string `json:"sourceFilter"`
+	HyDE           bool     `json:"hyde"`
+}
+
+// TruncateRequest is the JSON body for truncating message history.
+type TruncateRequest struct {
+	MessageID string `json:"messageID" binding:"required"`
+}
+
+// TruncateMessages removes a message and all subsequent messages from chat history.
+func (s *Server) TruncateMessages(c *gin.Context) {
+	notebookID := c.Param("id")
+	if !isValidID(notebookID) {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid notebook ID"})
+		return
+	}
+
+	var req TruncateRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "messageID is required"})
+		return
+	}
+
+	if err := s.nbManager.TruncateMessagesFrom(notebookID, req.MessageID); err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{"message": "Messages truncated"})
 }
 
 // Chat performs two-stage retrieval (hybrid + rerank) and streams the LLM response via SSE.
@@ -56,8 +88,40 @@ func (s *Server) Chat(c *gin.Context) {
 
 	ctx := c.Request.Context()
 
-	// Stage 1: Hybrid search — fetch top 20
-	hybridResults, err := s.searcher.Search(ctx, req.Query, notebookID, 20)
+	// Apply per-request retrieval params with bounds-checked defaults.
+	retrievalLimit := 20
+	if req.RetrievalLimit != nil && *req.RetrievalLimit > 0 && *req.RetrievalLimit <= 50 {
+		retrievalLimit = *req.RetrievalLimit
+	}
+
+	rerankerTopN := s.cfg.RerankerTopN
+	if req.RerankerTopN != nil && *req.RerankerTopN > 0 && *req.RerankerTopN <= retrievalLimit {
+		rerankerTopN = *req.RerankerTopN
+	}
+
+	temperature := 0.3
+	if req.Temperature != nil && *req.Temperature >= 0 && *req.Temperature <= 2 {
+		temperature = *req.Temperature
+	}
+
+	// Load notebook system prompt (best-effort; empty string if notebook unavailable).
+	systemPrompt := ""
+	if detail, err := s.nbManager.Get(notebookID); err == nil {
+		systemPrompt = detail.SystemPrompt
+	}
+
+	// HyDE: replace the search query with a hypothetical answer to improve recall.
+	searchQuery := req.Query
+	if req.HyDE {
+		if hydeDoc, hydeErr := s.generator.HyDEGenerate(ctx, req.Query, provider, apiKey, model); hydeErr == nil {
+			searchQuery = hydeDoc
+		} else {
+			log.Printf("HyDE generation failed, using original query: %v", hydeErr)
+		}
+	}
+
+	// Stage 1: Hybrid search
+	hybridResults, err := s.searcher.Search(ctx, searchQuery, notebookID, retrievalLimit, req.SourceFilter)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Search failed: " + err.Error()})
 		return
@@ -72,13 +136,13 @@ func (s *Server) Chat(c *gin.Context) {
 	}
 
 	// Stage 2: Rerank — get top N
-	rerankedResults, err := s.reranker.Rerank(req.Query, hybridResults, s.cfg.RerankerTopN)
+	rerankedResults, err := s.reranker.Rerank(req.Query, hybridResults, rerankerTopN)
 	if err != nil {
 		// Fallback to hybrid results if reranker fails; log so infra issues are visible.
 		log.Printf("reranker unavailable, falling back to hybrid results: %v", err)
 		rerankedResults = hybridResults
-		if len(rerankedResults) > s.cfg.RerankerTopN {
-			rerankedResults = rerankedResults[:s.cfg.RerankerTopN]
+		if len(rerankedResults) > rerankerTopN {
+			rerankedResults = rerankedResults[:rerankerTopN]
 		}
 	}
 
@@ -109,7 +173,7 @@ func (s *Server) Chat(c *gin.Context) {
 		var fullResponse string
 		var finalCitations interface{}
 
-		err := s.generator.GenerateStream(ctx, req.Query, rerankedResults, provider, apiKey, model, messages,
+		err := s.generator.GenerateStream(ctx, req.Query, rerankedResults, provider, apiKey, model, messages, temperature, systemPrompt,
 			func(chunk generate.StreamChunk) {
 				// Stop writing if the client already disconnected.
 				select {

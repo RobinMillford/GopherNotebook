@@ -31,23 +31,26 @@ type FileJob struct {
 
 // WorkerPool manages concurrent document ingestion.
 type WorkerPool struct {
-	weaviateClient *weaviate.Client
-	embedder       *Embedder
-	numWorkers     int
+	weaviateClient         *weaviate.Client
+	embedder               *Embedder
+	numWorkers             int
+	semanticDedupThreshold float32
 }
 
 // NewWorkerPool creates a worker pool with NumCPU-1 workers (minimum 1).
-func NewWorkerPool(weaviateClient *weaviate.Client, embedder *Embedder) *WorkerPool {
+// semanticDedupThreshold is a cosine distance threshold; set to 0 to disable dedup.
+func NewWorkerPool(weaviateClient *weaviate.Client, embedder *Embedder, semanticDedupThreshold float32) *WorkerPool {
 	workers := runtime.NumCPU() - 1
 	if workers < 1 {
 		workers = 1
 	}
-	log.Printf("Worker pool initialized with %d workers", workers)
+	log.Printf("Worker pool initialized with %d workers (dedup threshold=%.3f)", workers, semanticDedupThreshold)
 
 	return &WorkerPool{
-		weaviateClient: weaviateClient,
-		embedder:       embedder,
-		numWorkers:     workers,
+		weaviateClient:         weaviateClient,
+		embedder:               embedder,
+		numWorkers:             workers,
+		semanticDedupThreshold: semanticDedupThreshold,
 	}
 }
 
@@ -111,28 +114,32 @@ func (wp *WorkerPool) Ingest(ctx context.Context, jobs []FileJob, progressFn fun
 	wg.Wait()
 }
 
-// processFile is the per-file ingestion pipeline:
-// Parse → Chunk → Embed → Batch Insert to Weaviate
+// processFile parses a file then delegates to processDoc.
 func (wp *WorkerPool) processFile(ctx context.Context, job FileJob) error {
-	// Step 1: Parse the document
 	doc, err := ParseFile(job.FilePath)
 	if err != nil {
 		return fmt.Errorf("parse failed: %w", err)
 	}
+	return wp.processDoc(ctx, job.NotebookID, doc)
+}
 
-	// Step 2: Chunk the document
+// IngestDoc ingests a pre-parsed document (e.g. from URL fetch) directly.
+func (wp *WorkerPool) IngestDoc(ctx context.Context, notebookID string, doc *ParsedDocument) error {
+	return wp.processDoc(ctx, notebookID, doc)
+}
+
+// processDoc runs Chunk → Embed → (optional dedup) → Batch Insert for a parsed document.
+func (wp *WorkerPool) processDoc(ctx context.Context, notebookID string, doc *ParsedDocument) error {
 	chunks := ChunkDocument(doc)
 	if len(chunks) == 0 {
-		return fmt.Errorf("no chunks produced from %s", job.FilePath)
+		return fmt.Errorf("no chunks produced from %s", doc.FileName)
 	}
 
-	// Step 3: Extract texts for embedding
 	texts := make([]string, len(chunks))
 	for i, c := range chunks {
 		texts[i] = c.Text
 	}
 
-	// Step 4: Batch embed
 	vectors, err := wp.embedder.EmbedBatch(texts)
 	if err != nil {
 		return fmt.Errorf("embedding failed: %w", err)
@@ -142,8 +149,47 @@ func (wp *WorkerPool) processFile(ctx context.Context, job FileJob) error {
 		return fmt.Errorf("vector count mismatch: got %d vectors for %d chunks", len(vectors), len(chunks))
 	}
 
-	// Step 5: Batch insert to Weaviate
-	return wp.batchInsert(ctx, job.NotebookID, chunks, vectors)
+	// Semantic deduplication: skip chunks too similar to existing ones.
+	if wp.semanticDedupThreshold > 0 {
+		keep := make([]bool, len(chunks))
+		sem := make(chan struct{}, wp.numWorkers)
+		var wg sync.WaitGroup
+		for i := range chunks {
+			wg.Add(1)
+			go func(i int) {
+				defer wg.Done()
+				sem <- struct{}{}
+				defer func() { <-sem }()
+				isDup, dedupErr := db.IsNearDuplicate(ctx, wp.weaviateClient, notebookID, vectors[i], wp.semanticDedupThreshold)
+				keep[i] = dedupErr != nil || !isDup
+			}(i)
+		}
+		wg.Wait()
+
+		var filteredChunks []Chunk
+		var filteredVectors [][]float32
+		skipped := 0
+		for i, k := range keep {
+			if k {
+				filteredChunks = append(filteredChunks, chunks[i])
+				filteredVectors = append(filteredVectors, vectors[i])
+			} else {
+				skipped++
+			}
+		}
+		if skipped > 0 {
+			log.Printf("Semantic dedup: skipped %d/%d near-duplicate chunks for %s", skipped, len(chunks), doc.FileName)
+		}
+		chunks = filteredChunks
+		vectors = filteredVectors
+
+		if len(chunks) == 0 {
+			log.Printf("All chunks were duplicates for %s, nothing to insert", doc.FileName)
+			return nil
+		}
+	}
+
+	return wp.batchInsert(ctx, notebookID, chunks, vectors)
 }
 
 // batchInsert inserts chunks with their vectors into Weaviate in batches.

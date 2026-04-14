@@ -6,12 +6,22 @@ import (
 
 // Notebook represents a workspace that contains documents and chat history.
 type Notebook struct {
-	ID          string    `json:"id"`
-	Name        string    `json:"name"`
-	Description string    `json:"description,omitempty"`
-	CreatedAt   time.Time `json:"createdAt"`
-	UpdatedAt   time.Time `json:"updatedAt"`
-	FileCount   int       `json:"fileCount"`
+	ID           string    `json:"id"`
+	Name         string    `json:"name"`
+	Description  string    `json:"description,omitempty"`
+	SystemPrompt string    `json:"systemPrompt,omitempty"`
+	Tags         []string  `json:"tags,omitempty"`
+	CreatedAt    time.Time `json:"createdAt"`
+	UpdatedAt    time.Time `json:"updatedAt"`
+	FileCount    int       `json:"fileCount"`
+}
+
+// NotebookUpdate holds optional fields for a partial notebook update.
+type NotebookUpdate struct {
+	Name         *string
+	Description  *string
+	SystemPrompt *string
+	Tags         *[]string
 }
 
 // Source represents a file that has been ingested into a notebook.

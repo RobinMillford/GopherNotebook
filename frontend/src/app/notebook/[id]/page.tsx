@@ -2,9 +2,9 @@
 
 import { useCallback, useEffect, useRef, useState, use } from "react";
 import Link from "next/link";
-import { 
-  ArrowLeft, Upload, FileText, Settings, Send, Bot, User, 
-  Loader2, Trash2, CheckCircle2, AlertCircle, Key, Sparkles, Download, Copy, Check, Eye, EyeOff
+import {
+  ArrowLeft, Upload, FileText, Settings, Send, Bot, User,
+  Loader2, Trash2, CheckCircle2, AlertCircle, Key, Sparkles, Download, Copy, Check, Eye, EyeOff, Link as LinkIcon, Pencil, RefreshCw
 } from "lucide-react";
 import { motion, AnimatePresence } from "framer-motion";
 import { formatDistanceToNow } from "date-fns";
@@ -29,7 +29,7 @@ import {
 import { toast } from "sonner";
 import {
   Message, NotebookDetail, IngestProgress,
-  uploadFiles, API_BASE,
+  uploadFiles, deleteSource, ingestURL, truncateMessages, updateNotebook, reIngest, API_BASE,
 } from "@/lib/api";
 import { memo } from "react";
 
@@ -86,13 +86,13 @@ const LOCAL_PROVIDERS = new Set(["ollama", "lmstudio"]);
 
 // Memoized so only the message that changed (e.g. the streaming one) re-renders.
 // All finished messages keep their DOM nodes stable across token updates.
-const ChatMessage = memo(function ChatMessage({ msg }: { msg: Message }) {
+const ChatMessage = memo(function ChatMessage({ msg, onEdit }: { msg: Message; onEdit?: (msg: Message) => void }) {
   return (
     <motion.div
       key={msg.id}
       initial={{ opacity: 0, y: 10 }}
       animate={{ opacity: 1, y: 0 }}
-      className={`flex gap-4 ${msg.role === "user" ? "justify-end" : "justify-start"}`}
+      className={`flex gap-4 ${msg.role === "user" ? "justify-end" : "justify-start"} group`}
     >
       {msg.role === "assistant" && (
         <div className="w-8 h-8 rounded-full bg-primary flex items-center justify-center shrink-0 shadow-sm">
@@ -100,9 +100,20 @@ const ChatMessage = memo(function ChatMessage({ msg }: { msg: Message }) {
         </div>
       )}
 
-      <div className={`max-w-[85%] ${msg.role === "user" ? "bg-secondary text-secondary-foreground px-5 py-3.5 rounded-2xl rounded-tr-sm" : "pt-1"}`}>
+      <div className={`max-w-[85%] relative ${msg.role === "user" ? "bg-secondary text-secondary-foreground px-5 py-3.5 rounded-2xl rounded-tr-sm" : "pt-1"}`}>
         {msg.role === "user" ? (
-          <p className="whitespace-pre-wrap">{msg.content}</p>
+          <>
+            <p className="whitespace-pre-wrap">{msg.content}</p>
+            {onEdit && (
+              <button
+                onClick={() => onEdit(msg)}
+                className="absolute -top-2 -left-8 opacity-0 group-hover:opacity-100 transition-opacity p-1.5 rounded-lg bg-muted hover:bg-muted/80 text-muted-foreground hover:text-foreground"
+                aria-label="Edit message"
+              >
+                <Pencil className="w-3 h-3" />
+              </button>
+            )}
+          </>
         ) : (
           <div className="prose prose-sm dark:prose-invert max-w-none prose-p:leading-relaxed prose-pre:bg-black/5 dark:prose-pre:bg-white/5">
             <ReactMarkdown
@@ -189,11 +200,30 @@ export default function NotebookWorkspace({ params }: { params: Promise<{ id: st
   const chatAbortRef = useRef<AbortController | null>(null);
   const loadAbortRef = useRef<AbortController | null>(null);
 
+  // URL ingestion state
+  const [urlInputVisible, setUrlInputVisible] = useState(false);
+  const [urlInput, setUrlInput] = useState("");
+  const [ingestingURL, setIngestingURL] = useState(false);
+
   // Settings state
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [provider, setProvider] = useState("openai");
   const [apiKey, setApiKey] = useState("");
   const [model, setModel] = useState("");
+
+  // Retrieval params
+  const [retrievalLimit, setRetrievalLimit] = useState(20);
+  const [rerankerTopN, setRerankerTopN] = useState(5);
+  const [temperature, setTemperature] = useState(0.3);
+
+  // System prompt
+  const [systemPrompt, setSystemPrompt] = useState("");
+
+  // Source filter — empty = all sources
+  const [sourceFilter, setSourceFilter] = useState<string[]>([]);
+
+  // HyDE toggle
+  const [hyde, setHyde] = useState(false);
   
   // Dynamic Models
   const [dynamicModels, setDynamicModels] = useState<{id: string, name: string}[]>([]);
@@ -210,6 +240,10 @@ export default function NotebookWorkspace({ params }: { params: Promise<{ id: st
     setProvider(storedProvider);
     setApiKey(storedKey);
     setModel(storedModel);
+    setRetrievalLimit(Number(localStorage.getItem("gn_retrieval_limit") || "20"));
+    setRerankerTopN(Number(localStorage.getItem("gn_reranker_top_n") || "5"));
+    setTemperature(Number(localStorage.getItem("gn_temperature") || "0.3"));
+    setHyde(localStorage.getItem("gn_hyde") === "true");
 
     // Local providers don't need a key — always try to fetch
     if (LOCAL_PROVIDERS.has(storedProvider)) {
@@ -295,6 +329,7 @@ export default function NotebookWorkspace({ params }: { params: Promise<{ id: st
       const data: NotebookDetail = await res.json();
       setNotebook(data);
       if (data.messages) setMessages(data.messages);
+      if (data.systemPrompt) setSystemPrompt(data.systemPrompt);
     } catch (error: unknown) {
       if (error instanceof Error && error.name === "AbortError") return;
       toast.error("Failed to load notebook");
@@ -323,12 +358,91 @@ export default function NotebookWorkspace({ params }: { params: Promise<{ id: st
     }
   };
 
-  const saveSettings = () => {
+  const saveSettings = async () => {
     localStorage.setItem("gn_provider", provider);
     localStorage.setItem("gn_api_key", apiKey);
     localStorage.setItem("gn_model", model);
+    localStorage.setItem("gn_retrieval_limit", String(retrievalLimit));
+    localStorage.setItem("gn_reranker_top_n", String(rerankerTopN));
+    localStorage.setItem("gn_temperature", String(temperature));
+    localStorage.setItem("gn_hyde", String(hyde));
+    // Persist system prompt to backend
+    try {
+      await updateNotebook(notebookId, { systemPrompt });
+    } catch {
+      toast.error("Failed to save system prompt");
+      return;
+    }
     setSettingsOpen(false);
-    toast.success("Settings saved locally");
+    toast.success("Settings saved");
+  };
+
+  const exportChat = () => {
+    if (messages.length === 0) return;
+    let md = `# ${notebook?.name}\n\n*Exported ${new Date().toLocaleDateString()}*\n\n---\n\n`;
+    for (const msg of messages) {
+      if (msg.role === "user") {
+        md += `**You:** ${msg.content}\n\n`;
+      } else {
+        md += `**Assistant:** ${msg.content}\n\n`;
+        if (msg.citations && msg.citations.length > 0) {
+          md += `*Sources: ${msg.citations.map(c => `[${c.index}] ${c.fileName} p.${c.pageNumber}`).join(" · ")}*\n\n`;
+        }
+      }
+    }
+    const blob = new Blob([md], { type: "text/markdown" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = `${notebook?.name || "chat"}.md`;
+    a.click();
+    URL.revokeObjectURL(url);
+  };
+
+  const handleIngestURL = async () => {
+    const trimmed = urlInput.trim();
+    if (!trimmed || ingestingURL) return;
+    setIngestingURL(true);
+    try {
+      await ingestURL(notebookId, trimmed);
+      setUrlInput("");
+      setUrlInputVisible(false);
+      toast.info("URL ingestion started");
+      loadData();
+    } catch (error: unknown) {
+      toast.error(error instanceof Error ? error.message : "URL ingestion failed");
+    } finally {
+      setIngestingURL(false);
+    }
+  };
+
+  const handleDeleteSource = async (fileName: string) => {
+    try {
+      await deleteSource(notebookId, fileName);
+      toast.success(`Deleted ${fileName}`);
+      loadData();
+    } catch {
+      toast.error("Failed to delete source");
+    }
+  };
+
+  const handleReIngest = async (fileName: string) => {
+    try {
+      await reIngest(notebookId, fileName);
+      toast.success(`Re-ingestion started for ${fileName}`);
+    } catch {
+      toast.error("Failed to start re-ingestion");
+    }
+  };
+
+  const handleEditMessage = async (msg: Message) => {
+    try {
+      await truncateMessages(notebookId, msg.id);
+      setMessages(prev => prev.slice(0, prev.findIndex(m => m.id === msg.id)));
+      setInput(msg.content);
+    } catch {
+      toast.error("Failed to edit message");
+    }
   };
 
   const stopChat = () => {
@@ -366,7 +480,7 @@ export default function NotebookWorkspace({ params }: { params: Promise<{ id: st
           "X-LLM-Provider": provider,
           "X-LLM-Model": model
         },
-        body: JSON.stringify({ query }),
+        body: JSON.stringify({ query, retrievalLimit, rerankerTopN, temperature, sourceFilter: sourceFilter.length > 0 ? sourceFilter : undefined, hyde }),
       });
 
       if (!res.ok) throw new Error("Failed to start chat");
@@ -445,23 +559,55 @@ export default function NotebookWorkspace({ params }: { params: Promise<{ id: st
           </div>
         </div>
 
-        <div className="p-4 flex-none">
-          <Button 
-            className="w-full justify-start rounded-xl font-medium shadow-sm transition-all" 
-            variant="secondary"
-            onClick={() => fileInputRef.current?.click()}
-            disabled={uploading}
-          >
-            <Upload className="w-4 h-4 mr-2 text-primary" />
-            {uploading ? "Ingesting..." : "Upload Sources"}
-          </Button>
-          <input 
-            type="file" 
-            ref={fileInputRef} 
-            className="hidden" 
-            multiple 
-            accept=".pdf,.docx,.txt,.odt,.xlsx,.pptx,.html,.epub" 
-            onChange={handleFileUpload} 
+        <div className="p-4 flex-none space-y-2">
+          <div className="flex gap-2">
+            <Button
+              className="flex-1 justify-start rounded-xl font-medium shadow-sm transition-all"
+              variant="secondary"
+              onClick={() => fileInputRef.current?.click()}
+              disabled={uploading}
+            >
+              <Upload className="w-4 h-4 mr-2 text-primary" />
+              {uploading ? "Ingesting..." : "Upload Sources"}
+            </Button>
+            <Button
+              variant="outline"
+              size="icon"
+              className="rounded-xl shrink-0"
+              onClick={() => setUrlInputVisible(v => !v)}
+              aria-label="Add URL"
+            >
+              <LinkIcon className="w-4 h-4" />
+            </Button>
+          </div>
+          {urlInputVisible && (
+            <div className="flex gap-2">
+              <input
+                className="flex-1 bg-background/50 border border-border rounded-lg px-3 py-2 text-sm outline-none focus:border-primary/50 transition-colors"
+                placeholder="https://..."
+                value={urlInput}
+                onChange={e => setUrlInput(e.target.value)}
+                onKeyDown={e => { if (e.key === "Enter") handleIngestURL(); if (e.key === "Escape") setUrlInputVisible(false); }}
+                autoFocus
+              />
+              <Button
+                size="icon"
+                className="rounded-lg shrink-0"
+                onClick={handleIngestURL}
+                disabled={!urlInput.trim() || ingestingURL}
+                aria-label="Start ingestion"
+              >
+                {ingestingURL ? <Loader2 className="w-4 h-4 animate-spin" /> : <Send className="w-4 h-4" />}
+              </Button>
+            </div>
+          )}
+          <input
+            type="file"
+            ref={fileInputRef}
+            className="hidden"
+            multiple
+            accept=".pdf,.docx,.txt,.odt,.xlsx,.pptx,.html,.epub"
+            onChange={handleFileUpload}
           />
         </div>
 
@@ -483,8 +629,8 @@ export default function NotebookWorkspace({ params }: { params: Promise<{ id: st
         <ScrollArea className="flex-1 min-h-0 px-2 h-full">
           <div className="space-y-1 p-2 pb-4">
             {notebook?.sources.map((src) => (
-              <div 
-                key={src.fileName} 
+              <div
+                key={src.fileName}
                 className="flex items-center gap-3 p-2.5 rounded-lg hover:bg-black/5 dark:hover:bg-white/5 group border border-transparent hover:border-border/50 transition-all text-sm"
               >
                 <div className={`p-1.5 rounded-md flex-shrink-0 ${src.status === 'failed' ? 'bg-destructive/10 text-destructive' : 'bg-primary/10 text-primary'}`}>
@@ -499,15 +645,70 @@ export default function NotebookWorkspace({ params }: { params: Promise<{ id: st
                 <div className="min-w-0 flex-1">
                   <p className="truncate font-medium">{src.fileName}</p>
                   <p className="text-[10px] text-muted-foreground uppercase tracking-wider font-semibold">
-                    {(src.fileSize / 1024).toFixed(0)} KB • {formatDistanceToNow(new Date(src.ingestedAt))} ago
+                    {src.fileSize > 0 ? `${(src.fileSize / 1024).toFixed(0)} KB • ` : ""}{formatDistanceToNow(new Date(src.ingestedAt))} ago
                   </p>
                 </div>
+                {src.status !== 'processing' && (
+                  <div className="flex gap-0.5 opacity-0 group-hover:opacity-100 transition-opacity shrink-0">
+                    {src.status === 'ingested' && (
+                      <button
+                        onClick={() => handleReIngest(src.fileName)}
+                        className="p-1 rounded text-muted-foreground hover:text-primary"
+                        aria-label={`Re-ingest ${src.fileName}`}
+                      >
+                        <RefreshCw className="w-3.5 h-3.5" />
+                      </button>
+                    )}
+                    <button
+                      onClick={() => handleDeleteSource(src.fileName)}
+                      className="p-1 rounded text-muted-foreground hover:text-destructive"
+                      aria-label={`Delete ${src.fileName}`}
+                    >
+                      <Trash2 className="w-3.5 h-3.5" />
+                    </button>
+                  </div>
+                )}
               </div>
             ))}
             {notebook?.sources.length === 0 && !uploading && (
               <div className="text-center p-6 text-muted-foreground">
                 <FileText className="w-8 h-8 mx-auto mb-2 opacity-20" />
                 <p className="text-sm">No sources uploaded yet.</p>
+              </div>
+            )}
+
+            {/* Source filter — shown when 2+ ingested sources exist */}
+            {(notebook?.sources.filter(s => s.status === "ingested").length ?? 0) >= 2 && (
+              <div className="px-2 pt-2 pb-1 border-t border-border/40 mt-1">
+                <p className="text-[10px] uppercase tracking-wider text-muted-foreground font-semibold mb-2">Filter sources</p>
+                <div className="space-y-1">
+                  {notebook?.sources.filter(s => s.status === "ingested").map(src => (
+                    <label key={src.fileName} className="flex items-center gap-2 text-xs cursor-pointer hover:text-foreground text-muted-foreground py-0.5">
+                      <input
+                        type="checkbox"
+                        checked={sourceFilter.length === 0 || sourceFilter.includes(src.fileName)}
+                        onChange={e => {
+                          if (e.target.checked) {
+                            setSourceFilter(prev => prev.filter(f => f !== src.fileName).length === (notebook?.sources.filter(s => s.status === "ingested").length ?? 0) - 1
+                              ? [] // all selected = clear filter
+                              : [...prev.filter(f => f !== src.fileName), src.fileName]
+                            );
+                          } else {
+                            const ingested = notebook?.sources.filter(s => s.status === "ingested").map(s => s.fileName) ?? [];
+                            setSourceFilter(ingested.filter(f => f !== src.fileName));
+                          }
+                        }}
+                        className="accent-primary"
+                      />
+                      <span className="truncate max-w-[160px]">{src.fileName}</span>
+                    </label>
+                  ))}
+                  {sourceFilter.length > 0 && (
+                    <button onClick={() => setSourceFilter([])} className="text-[10px] text-primary hover:underline mt-1">
+                      Clear filter ({sourceFilter.length} selected)
+                    </button>
+                  )}
+                </div>
               </div>
             )}
           </div>
@@ -526,6 +727,20 @@ export default function NotebookWorkspace({ params }: { params: Promise<{ id: st
         {/* Dynamic ambient header glow */}
         <div className="absolute top-0 inset-x-0 h-32 bg-gradient-to-b from-primary/5 to-transparent pointer-events-none z-10" />
 
+        {/* Toolbar */}
+        {messages.length > 0 && (
+          <div className="absolute top-3 right-4 z-20 flex gap-2">
+            <Tooltip>
+              <TooltipTrigger>
+                <Button variant="ghost" size="icon" className="h-8 w-8 rounded-lg" onClick={exportChat}>
+                  <Download className="w-4 h-4" />
+                </Button>
+              </TooltipTrigger>
+              <TooltipContent>Export chat as Markdown</TooltipContent>
+            </Tooltip>
+          </div>
+        )}
+
         <ScrollArea className="flex-1 min-h-0 h-full w-full px-4 lg:px-12 py-6">
           <div className="max-w-3xl mx-auto space-y-6 pb-24 pt-4">
             {messages.length === 0 ? (
@@ -540,7 +755,7 @@ export default function NotebookWorkspace({ params }: { params: Promise<{ id: st
               </div>
             ) : (
               messages.map((msg) => (
-                <ChatMessage key={msg.id} msg={msg} />
+                <ChatMessage key={msg.id} msg={msg} onEdit={msg.role === "user" ? handleEditMessage : undefined} />
               ))
             )}
             {chatting && (
@@ -852,6 +1067,75 @@ export default function NotebookWorkspace({ params }: { params: Promise<{ id: st
                     }
                   </div>
                 )}
+              </div>
+            </div>
+
+            {/* System Prompt */}
+            <div className="grid gap-2">
+              <Label className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">System Prompt</Label>
+              <textarea
+                value={systemPrompt}
+                onChange={e => setSystemPrompt(e.target.value)}
+                placeholder="You are a helpful research assistant... (leave blank for default)"
+                rows={3}
+                className="w-full bg-background/50 border border-border rounded-lg px-3 py-2 text-sm outline-none focus:border-primary/50 transition-colors resize-none"
+              />
+              <p className="text-[10px] text-muted-foreground">Custom instructions prepended to every prompt. Leave blank for default RAG assistant behaviour.</p>
+            </div>
+
+            {/* HyDE Toggle */}
+            <div className="flex items-center justify-between">
+              <div>
+                <p className="text-xs font-semibold">HyDE retrieval</p>
+                <p className="text-[10px] text-muted-foreground mt-0.5">Generate a hypothetical answer before embedding — improves recall on vague queries. Uses one extra LLM call per chat.</p>
+              </div>
+              <button
+                onClick={() => setHyde(v => !v)}
+                className={`relative w-10 h-6 rounded-full transition-colors shrink-0 ${hyde ? "bg-primary" : "bg-muted"}`}
+                aria-label="Toggle HyDE"
+              >
+                <span className={`absolute top-1 w-4 h-4 rounded-full bg-white shadow transition-transform ${hyde ? "translate-x-5" : "translate-x-1"}`} />
+              </button>
+            </div>
+
+            {/* Retrieval Params */}
+            <div className="grid gap-3">
+              <Label className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">Retrieval Settings</Label>
+              <div className="grid gap-2">
+                <div className="flex justify-between text-xs">
+                  <span className="text-muted-foreground">Chunks retrieved</span>
+                  <span className="font-mono font-semibold">{retrievalLimit}</span>
+                </div>
+                <input
+                  type="range" min={5} max={50} step={5}
+                  value={retrievalLimit}
+                  onChange={e => setRetrievalLimit(Number(e.target.value))}
+                  className="w-full accent-primary"
+                />
+              </div>
+              <div className="grid gap-2">
+                <div className="flex justify-between text-xs">
+                  <span className="text-muted-foreground">Reranker top-N</span>
+                  <span className="font-mono font-semibold">{rerankerTopN}</span>
+                </div>
+                <input
+                  type="range" min={1} max={20} step={1}
+                  value={rerankerTopN}
+                  onChange={e => setRerankerTopN(Number(e.target.value))}
+                  className="w-full accent-primary"
+                />
+              </div>
+              <div className="grid gap-2">
+                <div className="flex justify-between text-xs">
+                  <span className="text-muted-foreground">Temperature</span>
+                  <span className="font-mono font-semibold">{temperature.toFixed(1)}</span>
+                </div>
+                <input
+                  type="range" min={0} max={2} step={0.1}
+                  value={temperature}
+                  onChange={e => setTemperature(Number(e.target.value))}
+                  className="w-full accent-primary"
+                />
               </div>
             </div>
           </div>
