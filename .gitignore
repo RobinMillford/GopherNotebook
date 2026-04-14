@@ -72,5 +72,7 @@ venv/
 .code-review-graph/
 GEMINI.md
 .windsurfrules
+.cursorrules
+.opencode.json
 # Other potential local AI noise
 .anthropic/
