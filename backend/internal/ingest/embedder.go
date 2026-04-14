@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"time"
 )
 
 // Embedder handles batch embedding requests to LocalAI.
@@ -36,11 +37,15 @@ func NewEmbedder(baseURL, model string) *Embedder {
 		baseURL:   baseURL,
 		model:     model,
 		batchSize: 32,
-		client:    &http.Client{},
+		client:    &http.Client{Timeout: 30 * time.Second},
 	}
 }
 
+// embedMaxRetries is the number of attempts per batch before giving up.
+const embedMaxRetries = 3
+
 // EmbedBatch generates embeddings for a list of texts in batches.
+// Each batch is retried up to embedMaxRetries times on transient errors.
 // Returns vectors in the same order as the input texts.
 func (e *Embedder) EmbedBatch(texts []string) ([][]float32, error) {
 	var allEmbeddings [][]float32
@@ -52,9 +57,21 @@ func (e *Embedder) EmbedBatch(texts []string) ([][]float32, error) {
 		}
 		batch := texts[i:end]
 
-		embeddings, err := e.embedSingle(batch)
+		var (
+			embeddings [][]float32
+			err        error
+		)
+		for attempt := range embedMaxRetries {
+			embeddings, err = e.embedSingle(batch)
+			if err == nil {
+				break
+			}
+			if attempt < embedMaxRetries-1 {
+				time.Sleep(time.Second)
+			}
+		}
 		if err != nil {
-			return nil, fmt.Errorf("batch embed failed at offset %d: %w", i, err)
+			return nil, fmt.Errorf("batch embed failed at offset %d after %d attempts: %w", i, embedMaxRetries, err)
 		}
 
 		allEmbeddings = append(allEmbeddings, embeddings...)

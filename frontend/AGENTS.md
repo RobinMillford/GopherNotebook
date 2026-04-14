@@ -1,5 +1,13 @@
 <!-- BEGIN:nextjs-agent-rules -->
-# This is NOT the Next.js you know
+# Next.js 16.2.2 — Not your training data
 
-This version has breaking changes — APIs, conventions, and file structure may all differ from your training data. Read the relevant guide in `node_modules/next/dist/docs/` before writing any code. Heed deprecation notices.
+APIs, conventions, and file structure differ from earlier versions. Before writing any code, read the relevant docs in `node_modules/next/dist/docs/`. Heed deprecation notices.
+
+## Path alias
+
+`@/*` maps to `frontend/src/*`
+
+## UI components
+
+shadcn/ui with style "base-nova". Components live in `@/components/ui`.
 <!-- END:nextjs-agent-rules -->

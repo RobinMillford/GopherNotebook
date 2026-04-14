@@ -49,7 +49,7 @@ func (g *Generator) GenerateStream(
 	streamFn func(StreamChunk),
 ) error {
 	// Build the LLM client based on provider
-	llm, err := g.createLLM(provider, apiKey, model)
+	llm, err := g.createLLM(ctx, provider, apiKey, model)
 	if err != nil {
 		return fmt.Errorf("failed to create LLM: %w", err)
 	}
@@ -85,7 +85,7 @@ func (g *Generator) GenerateStream(
 }
 
 // createLLM creates the appropriate langchaingo LLM client.
-func (g *Generator) createLLM(provider, apiKey, model string) (llms.Model, error) {
+func (g *Generator) createLLM(ctx context.Context, provider, apiKey, model string) (llms.Model, error) {
 	switch strings.ToLower(provider) {
 	case "openai", "groq", "openrouter":
 		opts := []openai.Option{openai.WithToken(apiKey)}
@@ -124,7 +124,7 @@ func (g *Generator) createLLM(provider, apiKey, model string) (llms.Model, error
 		return openai.New(opts...)
 
 	case "google", "gemini":
-		return googleai.New(ctx(context.Background()), googleai.WithAPIKey(apiKey), googleai.WithDefaultModel(model))
+		return googleai.New(ctx, googleai.WithAPIKey(apiKey), googleai.WithDefaultModel(model))
 
 	case "anthropic":
 		opts := []anthropic.Option{anthropic.WithToken(apiKey)}
@@ -188,7 +188,3 @@ func buildCitations(chunks []retrieve.RetrievedChunk) []Citation {
 	return citations
 }
 
-// ctx helper for google AI which requires context in constructor
-func ctx(c context.Context) context.Context {
-	return c
-}

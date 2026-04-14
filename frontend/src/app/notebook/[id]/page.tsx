@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useRef, useState, use } from "react";
+import { useCallback, useEffect, useRef, useState, use } from "react";
 import Link from "next/link";
 import { 
   ArrowLeft, Upload, FileText, Settings, Send, Bot, User, 
@@ -27,17 +27,11 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog";
 import { toast } from "sonner";
-import { 
-  NotebookDetail, IngestProgress, 
-  getNotebook, uploadFiles, API_BASE 
+import {
+  Message, NotebookDetail, IngestProgress,
+  uploadFiles, API_BASE,
 } from "@/lib/api";
-
-type Message = {
-  id: string;
-  role: "user" | "assistant";
-  content: string;
-  citations?: { fileName: string; pageNumber: number; snippet: string; index: number }[];
-};
+import { memo } from "react";
 
 const AVAILABLE_MODELS: Record<string, {id: string; name: string}[]> = {
   openai: [
@@ -90,6 +84,90 @@ const AVAILABLE_MODELS: Record<string, {id: string; name: string}[]> = {
 // Providers that run locally and need no API key
 const LOCAL_PROVIDERS = new Set(["ollama", "lmstudio"]);
 
+// Memoized so only the message that changed (e.g. the streaming one) re-renders.
+// All finished messages keep their DOM nodes stable across token updates.
+const ChatMessage = memo(function ChatMessage({ msg }: { msg: Message }) {
+  return (
+    <motion.div
+      key={msg.id}
+      initial={{ opacity: 0, y: 10 }}
+      animate={{ opacity: 1, y: 0 }}
+      className={`flex gap-4 ${msg.role === "user" ? "justify-end" : "justify-start"}`}
+    >
+      {msg.role === "assistant" && (
+        <div className="w-8 h-8 rounded-full bg-primary flex items-center justify-center shrink-0 shadow-sm">
+          <Sparkles className="w-4 h-4 text-primary-foreground" />
+        </div>
+      )}
+
+      <div className={`max-w-[85%] ${msg.role === "user" ? "bg-secondary text-secondary-foreground px-5 py-3.5 rounded-2xl rounded-tr-sm" : "pt-1"}`}>
+        {msg.role === "user" ? (
+          <p className="whitespace-pre-wrap">{msg.content}</p>
+        ) : (
+          <div className="prose prose-sm dark:prose-invert max-w-none prose-p:leading-relaxed prose-pre:bg-black/5 dark:prose-pre:bg-white/5">
+            <ReactMarkdown
+              remarkPlugins={[remarkGfm]}
+              components={{
+                img: () => null,
+                a: ({ node, href, children, ...props }) => {
+                  const match = href?.match(/^#citation-(\d+)$/);
+                  if (match && msg.citations) {
+                    const cite = msg.citations.find(c => c.index === parseInt(match[1]));
+                    if (cite) {
+                      return (
+                        <Tooltip>
+                          <TooltipTrigger>
+                            <Badge variant="outline" className="mx-1 cursor-pointer hover:bg-primary/10 text-[10px] h-5 align-middle border-primary/30 text-primary shadow-sm hover:shadow transition-all">
+                              {match[1]}
+                            </Badge>
+                          </TooltipTrigger>
+                          <TooltipContent className="max-w-xs p-3 glass">
+                            <p className="font-semibold text-xs mb-1">{cite.fileName} (Page {cite.pageNumber})</p>
+                            <p className="text-xs text-muted-foreground line-clamp-4 italic">&ldquo;{cite.snippet}&rdquo;</p>
+                          </TooltipContent>
+                        </Tooltip>
+                      );
+                    }
+                  }
+                  return (
+                    <a {...props} href={href} className="text-primary hover:underline underline-offset-4" target="_blank" rel="noopener noreferrer">
+                      {children}
+                    </a>
+                  );
+                },
+              }}
+            >
+              {msg.content.replace(/\[Source (\d+)\]/g, "[$1](#citation-$1)")}
+            </ReactMarkdown>
+
+            {msg.citations && msg.citations.length > 0 && (
+              <div className="mt-6 pt-4 border-t border-border/50">
+                <p className="text-xs font-semibold text-muted-foreground mb-3 tracking-wider uppercase">Sources Cited</p>
+                <div className="flex flex-wrap gap-2">
+                  {msg.citations.map((c, i) => (
+                    <div key={i} className="flex items-center gap-1.5 text-xs bg-black/5 dark:bg-white/5 py-1 px-2.5 rounded-md border border-border/50">
+                      <span className="text-primary font-bold">{c.index}</span>
+                      <FileText className="w-3 h-3 text-muted-foreground" />
+                      <span className="max-w-[150px] truncate">{c.fileName}</span>
+                      {c.pageNumber > 0 && <span className="text-muted-foreground opacity-70">p.{c.pageNumber}</span>}
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
+          </div>
+        )}
+      </div>
+
+      {msg.role === "user" && (
+        <div className="w-8 h-8 rounded-full bg-muted flex items-center justify-center shrink-0">
+          <User className="w-4 h-4 text-muted-foreground" />
+        </div>
+      )}
+    </motion.div>
+  );
+});
+
 export default function NotebookWorkspace({ params }: { params: Promise<{ id: string }> }) {
   const resolvedParams = use(params);
   const notebookId = resolvedParams.id;
@@ -107,6 +185,9 @@ export default function NotebookWorkspace({ params }: { params: Promise<{ id: st
   const [input, setInput] = useState("");
   const [chatting, setChatting] = useState(false);
   const messagesEndRef = useRef<HTMLDivElement>(null);
+  // AbortControllers — chat stream cancel and loadData stale-response guard
+  const chatAbortRef = useRef<AbortController | null>(null);
+  const loadAbortRef = useRef<AbortController | null>(null);
 
   // Settings state
   const [settingsOpen, setSettingsOpen] = useState(false);
@@ -129,7 +210,7 @@ export default function NotebookWorkspace({ params }: { params: Promise<{ id: st
     setProvider(storedProvider);
     setApiKey(storedKey);
     setModel(storedModel);
-    
+
     // Local providers don't need a key — always try to fetch
     if (LOCAL_PROVIDERS.has(storedProvider)) {
       fetchDynamicModels(storedProvider, "local");
@@ -138,7 +219,32 @@ export default function NotebookWorkspace({ params }: { params: Promise<{ id: st
     }
 
     loadData();
-    setupSSE();
+  }, [notebookId]);
+
+  // Separate effect so the EventSource cleanup is always called on unmount
+  // or when notebookId changes — previously the return value of setupSSE()
+  // was discarded inside the combined effect, leaking the connection.
+  useEffect(() => {
+    const eventSource = new EventSource(`${API_BASE}/notebooks/${notebookId}/ingest/progress`);
+
+    eventSource.addEventListener("progress", (e) => {
+      const data = JSON.parse(e.data) as IngestProgress;
+      setProgress(data);
+      if (data.status === "done") {
+        setUploading(false);
+        setTimeout(() => setProgress(null), 3000);
+        loadData();
+        toast.success("Documents ingested successfully");
+      }
+    });
+
+    eventSource.addEventListener("ping", () => {});
+
+    eventSource.addEventListener("error", () => {
+      eventSource.close();
+    });
+
+    return () => eventSource.close();
   }, [notebookId]);
 
   const fetchDynamicModels = async (currentProvider: string, currentApiKey: string) => {
@@ -162,8 +268,7 @@ export default function NotebookWorkspace({ params }: { params: Promise<{ id: st
         }
         if (data?.hint) setLocalHint(data.hint);
       }
-    } catch (e) {
-      console.error("Failed to load models list", e);
+    } catch {
       if (isLocal) setLocalHint("not_running");
     } finally {
       setLoadingModels(false);
@@ -175,38 +280,28 @@ export default function NotebookWorkspace({ params }: { params: Promise<{ id: st
     messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
   }, [messages]);
 
-  const loadData = async () => {
+  const loadData = useCallback(async () => {
+    // Cancel any previous in-flight load so a fast notebookId change can't
+    // overwrite newer data with a stale response (#19).
+    loadAbortRef.current?.abort();
+    const controller = new AbortController();
+    loadAbortRef.current = controller;
+
     try {
-      const data = await getNotebook(notebookId);
+      const res = await fetch(`${API_BASE}/notebooks/${notebookId}`, {
+        signal: controller.signal,
+      });
+      if (!res.ok) throw new Error("Failed to fetch notebook details");
+      const data: NotebookDetail = await res.json();
       setNotebook(data);
-      if (data && data.messages) {
-        setMessages(data.messages);
-      }
-    } catch (error) {
+      if (data.messages) setMessages(data.messages);
+    } catch (error: unknown) {
+      if (error instanceof Error && error.name === "AbortError") return;
       toast.error("Failed to load notebook");
     } finally {
       setLoading(false);
     }
-  };
-
-  const setupSSE = () => {
-    const eventSource = new EventSource(`${API_BASE}/notebooks/${notebookId}/ingest/progress`);
-    
-    eventSource.addEventListener("progress", (e) => {
-      const data = JSON.parse(e.data) as IngestProgress;
-      setProgress(data);
-      if (data.status === "done") {
-        setUploading(false);
-        setTimeout(() => setProgress(null), 3000);
-        loadData(); // reload sources
-        toast.success("Documents ingested successfully");
-      }
-    });
-
-    eventSource.addEventListener("ping", () => {});
-    
-    return () => eventSource.close();
-  };
+  }, [notebookId]);
 
   const handleFileUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
     if (!e.target.files || e.target.files.length === 0) return;
@@ -218,8 +313,8 @@ export default function NotebookWorkspace({ params }: { params: Promise<{ id: st
       await uploadFiles(notebookId, files);
       toast.info(`Started processing ${files.length} files`);
       loadData(); // Update sources list to show "processing"
-    } catch (error: any) {
-      toast.error(error.message || "Upload failed");
+    } catch (error: unknown) {
+      toast.error(error instanceof Error ? error.message : "Upload failed");
       setUploading(false);
     }
     
@@ -236,6 +331,10 @@ export default function NotebookWorkspace({ params }: { params: Promise<{ id: st
     toast.success("Settings saved locally");
   };
 
+  const stopChat = () => {
+    chatAbortRef.current?.abort();
+  };
+
   const submitChat = async () => {
     if (!input.trim() || chatting) return;
     if (!apiKey) {
@@ -246,7 +345,7 @@ export default function NotebookWorkspace({ params }: { params: Promise<{ id: st
 
     const query = input.trim();
     setInput("");
-    
+
     const newMsgId = Date.now().toString();
     setMessages(prev => [...prev, { id: `u_${newMsgId}`, role: "user", content: query }]);
     setChatting(true);
@@ -254,9 +353,13 @@ export default function NotebookWorkspace({ params }: { params: Promise<{ id: st
     const asstMsgId = `a_${newMsgId}`;
     setMessages(prev => [...prev, { id: asstMsgId, role: "assistant", content: "" }]);
 
+    const controller = new AbortController();
+    chatAbortRef.current = controller;
+
     try {
       const res = await fetch(`${API_BASE}/notebooks/${notebookId}/chat`, {
         method: "POST",
+        signal: controller.signal,
         headers: {
           "Content-Type": "application/json",
           "X-API-Key": apiKey,
@@ -301,14 +404,18 @@ export default function NotebookWorkspace({ params }: { params: Promise<{ id: st
               if (data.done) {
                  // Finalize
               }
-            } catch (e) {
-              console.error("Parse error", e);
+            } catch {
+              // Malformed SSE chunk — skip silently.
             }
           }
         }
       }
-    } catch (error: any) {
-      toast.error(error.message || "Chat stream failed");
+    } catch (error: unknown) {
+      if (error instanceof Error && error.name === "AbortError") {
+        // User clicked stop — not an error worth toasting.
+      } else {
+        toast.error(error instanceof Error ? error.message : "Chat stream failed");
+      }
     } finally {
       setChatting(false);
     }
@@ -433,89 +540,7 @@ export default function NotebookWorkspace({ params }: { params: Promise<{ id: st
               </div>
             ) : (
               messages.map((msg) => (
-                <motion.div 
-                  key={msg.id}
-                  initial={{ opacity: 0, y: 10 }}
-                  animate={{ opacity: 1, y: 0 }}
-                  className={`flex gap-4 ${msg.role === 'user' ? 'justify-end' : 'justify-start'}`}
-                >
-                  {msg.role === 'assistant' && (
-                    <div className="w-8 h-8 rounded-full bg-primary flex items-center justify-center shrink-0 shadow-sm">
-                      <Sparkles className="w-4 h-4 text-primary-foreground" />
-                    </div>
-                  )}
-                  
-                  <div className={`max-w-[85%] ${msg.role === 'user' ? 'bg-secondary text-secondary-foreground px-5 py-3.5 rounded-2xl rounded-tr-sm' : 'pt-1'}`}>
-                    {msg.role === 'user' ? (
-                      <p className="whitespace-pre-wrap">{msg.content}</p>
-                    ) : (
-                      <div className="prose prose-sm dark:prose-invert max-w-none prose-p:leading-relaxed prose-pre:bg-black/5 dark:prose-pre:bg-white/5">
-                        <ReactMarkdown
-                          remarkPlugins={[remarkGfm]}
-                          components={{
-                            a: ({ node, href, children, ...props }) => {
-                              const match = href?.match(/^#citation-(\d+)$/);
-                              if (match && msg.citations) {
-                                const citeIdx = parseInt(match[1]) - 1;
-                                const cite = msg.citations.find(c => c.index === citeIdx + 1);
-                                if (cite) {
-                                  return (
-                                    <Tooltip>
-                                      <TooltipTrigger>
-                                        <Badge variant="outline" className="mx-1 cursor-pointer hover:bg-primary/10 text-[10px] h-5 align-middle border-primary/30 text-primary shadow-sm hover:shadow transition-all">
-                                          {match[1]}
-                                        </Badge>
-                                      </TooltipTrigger>
-                                      <TooltipContent className="max-w-xs p-3 glass">
-                                        <p className="font-semibold text-xs mb-1">{cite.fileName} (Page {cite.pageNumber})</p>
-                                        <p className="text-xs text-muted-foreground line-clamp-4 italic">"{cite.snippet}"</p>
-                                      </TooltipContent>
-                                    </Tooltip>
-                                  );
-                                }
-                              }
-                              return (
-                                <a
-                                  {...props}
-                                  href={href}
-                                  className="text-primary hover:underline underline-offset-4"
-                                  target="_blank"
-                                  rel="noopener noreferrer"
-                                >
-                                  {children}
-                                </a>
-                              );
-                            }
-                          }}
-                        >
-                          {msg.content.replace(/\[Source (\d+)\]/g, '[$1](#citation-$1)')}
-                        </ReactMarkdown>
-                        
-                        {msg.citations && msg.citations.length > 0 && (
-                          <div className="mt-6 pt-4 border-t border-border/50">
-                            <p className="text-xs font-semibold text-muted-foreground mb-3 tracking-wider uppercase">Sources Cited</p>
-                            <div className="flex flex-wrap gap-2">
-                              {msg.citations.map((c, i) => (
-                                <div key={i} className="flex items-center gap-1.5 text-xs bg-black/5 dark:bg-white/5 py-1 px-2.5 rounded-md border border-border/50">
-                                  <span className="text-primary font-bold">{c.index}</span>
-                                  <FileText className="w-3 h-3 text-muted-foreground" />
-                                  <span className="max-w-[150px] truncate">{c.fileName}</span>
-                                  {c.pageNumber > 0 && <span className="text-muted-foreground opacity-70">p.{c.pageNumber}</span>}
-                                </div>
-                              ))}
-                            </div>
-                          </div>
-                        )}
-                      </div>
-                    )}
-                  </div>
-                  
-                  {msg.role === 'user' && (
-                    <div className="w-8 h-8 rounded-full bg-muted flex items-center justify-center shrink-0">
-                      <User className="w-4 h-4 text-muted-foreground" />
-                    </div>
-                  )}
-                </motion.div>
+                <ChatMessage key={msg.id} msg={msg} />
               ))
             )}
             {chatting && (
@@ -547,14 +572,27 @@ export default function NotebookWorkspace({ params }: { params: Promise<{ id: st
                 }}
                 disabled={chatting || (notebook?.sources.length === 0)}
               />
-              <Button 
-                size="icon" 
-                className={`rounded-xl h-10 w-10 shrink-0 transition-all ${input.trim() ? 'bg-primary text-primary-foreground shadow-md' : 'bg-muted text-muted-foreground'}`}
-                disabled={!input.trim() || chatting}
-                onClick={submitChat}
-              >
-                <Send className="w-4 h-4 translate-y-[1px] -translate-x-[1px]" />
-              </Button>
+              {chatting ? (
+                <Button
+                  size="icon"
+                  variant="destructive"
+                  className="rounded-xl h-10 w-10 shrink-0"
+                  onClick={stopChat}
+                  aria-label="Stop generation"
+                >
+                  <span className="w-3 h-3 rounded-sm bg-current" />
+                </Button>
+              ) : (
+                <Button
+                  size="icon"
+                  className={`rounded-xl h-10 w-10 shrink-0 transition-all ${input.trim() ? 'bg-primary text-primary-foreground shadow-md' : 'bg-muted text-muted-foreground'}`}
+                  disabled={!input.trim()}
+                  onClick={submitChat}
+                  aria-label="Send message"
+                >
+                  <Send className="w-4 h-4 translate-y-[1px] -translate-x-[1px]" />
+                </Button>
+              )}
             </div>
           </div>
           <div className="max-w-3xl mx-auto text-center mt-3">
@@ -566,14 +604,7 @@ export default function NotebookWorkspace({ params }: { params: Promise<{ id: st
       </main>
 
       {/* Settings Dialog */}
-      <Dialog open={settingsOpen} onOpenChange={(open) => {
-        if (!open) {
-          localStorage.setItem("gn_provider", provider);
-          localStorage.setItem("gn_api_key", apiKey);
-          localStorage.setItem("gn_model", model);
-        }
-        setSettingsOpen(open);
-      }}>
+      <Dialog open={settingsOpen} onOpenChange={setSettingsOpen}>
         <DialogContent className="sm:max-w-[480px] glass max-h-[90vh] flex flex-col p-0 gap-0">
           <DialogHeader className="px-6 pt-6 pb-4 border-b shrink-0">
             <DialogTitle className="flex items-center gap-2">

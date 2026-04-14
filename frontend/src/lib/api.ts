@@ -18,9 +18,16 @@ export interface Source {
   error?: string;
 }
 
+export interface Message {
+  id: string;
+  role: "user" | "assistant";
+  content: string;
+  citations?: { fileName: string; pageNumber: number; snippet: string; index: number }[];
+}
+
 export interface NotebookDetail extends Notebook {
   sources: Source[];
-  messages?: any[];
+  messages?: Message[];
 }
 
 export interface IngestProgress {
@@ -31,17 +38,18 @@ export interface IngestProgress {
   error?: string;
 }
 
-export async function fetchNotebooks(): Promise<Notebook[]> {
-  const res = await fetch(`${API_BASE}/notebooks`);
+export async function fetchNotebooks(signal?: AbortSignal): Promise<Notebook[]> {
+  const res = await fetch(`${API_BASE}/notebooks`, { signal });
   if (!res.ok) throw new Error("Failed to fetch notebooks");
   return res.json();
 }
 
-export async function createNotebook(name: string, description: string): Promise<Notebook> {
+export async function createNotebook(name: string, description: string, signal?: AbortSignal): Promise<Notebook> {
   const res = await fetch(`${API_BASE}/notebooks`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ name, description }),
+    signal,
   });
   if (!res.ok) throw new Error("Failed to create notebook");
   return res.json();
@@ -53,8 +61,8 @@ export async function getNotebook(id: string): Promise<NotebookDetail> {
   return res.json();
 }
 
-export async function deleteNotebook(id: string): Promise<void> {
-  const res = await fetch(`${API_BASE}/notebooks/${id}`, { method: "DELETE" });
+export async function deleteNotebook(id: string, signal?: AbortSignal): Promise<void> {
+  const res = await fetch(`${API_BASE}/notebooks/${id}`, { method: "DELETE", signal });
   if (!res.ok) throw new Error("Failed to delete notebook");
 }
 

@@ -1,6 +1,7 @@
 package api
 
 import (
+	"log"
 	"net/http"
 
 	"github.com/gin-gonic/gin"
@@ -77,7 +78,9 @@ func (s *Server) DeleteNotebook(c *gin.Context) {
 
 	// Delete notebook metadata
 	if err := s.nbManager.Delete(id); err != nil {
-		c.JSON(http.StatusNotFound, gin.H{"error": "Notebook not found"})
+		// Weaviate chunks were already deleted above. Log so the orphan state is visible.
+		log.Printf("WARNING: notebook %s Weaviate chunks deleted but metadata removal failed: %v", id, err)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Notebook partially deleted; retry to clean up"})
 		return
 	}
 
@@ -120,18 +123,18 @@ func (s *Server) DeleteSource(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{"message": "Source deleted"})
 }
 
-// ClearChatHistory deletes the chat history for a notebook
+// ClearChatHistory deletes the chat history for a notebook.
 func (s *Server) ClearChatHistory(c *gin.Context) {
-        id := c.Param("id")
+	id := c.Param("id")
 	if !isValidID(id) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid notebook ID"})
 		return
 	}
 
-        if err := s.nbManager.ClearChatHistory(id); err != nil {
-                c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to clear chat history"})
-                return
-        }
+	if err := s.nbManager.ClearChatHistory(id); err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to clear chat history"})
+		return
+	}
 
-        c.JSON(http.StatusOK, gin.H{"message": "Chat history cleared"})
+	c.JSON(http.StatusOK, gin.H{"message": "Chat history cleared"})
 }

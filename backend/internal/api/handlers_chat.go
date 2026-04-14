@@ -3,11 +3,12 @@ package api
 import (
 	"encoding/json"
 	"io"
+	"log"
 	"net/http"
 	"time"
 
-	"github.com/google/uuid"
 	"github.com/gin-gonic/gin"
+	"github.com/google/uuid"
 	"github.com/yamin/gophernotebook/internal/generate"
 	"github.com/yamin/gophernotebook/internal/notebook"
 )
@@ -73,15 +74,20 @@ func (s *Server) Chat(c *gin.Context) {
 	// Stage 2: Rerank — get top N
 	rerankedResults, err := s.reranker.Rerank(req.Query, hybridResults, s.cfg.RerankerTopN)
 	if err != nil {
-		// Fallback to hybrid results if reranker fails
+		// Fallback to hybrid results if reranker fails; log so infra issues are visible.
+		log.Printf("reranker unavailable, falling back to hybrid results: %v", err)
 		rerankedResults = hybridResults
 		if len(rerankedResults) > s.cfg.RerankerTopN {
 			rerankedResults = rerankedResults[:s.cfg.RerankerTopN]
 		}
 	}
 
-	// Load history
+	// Load history — cap to the most recent 50 messages to bound prompt size.
 	messages, _ := s.nbManager.GetMessages(notebookID)
+	const historyWindow = 50
+	if len(messages) > historyWindow {
+		messages = messages[len(messages)-historyWindow:]
+	}
 
 	// Set SSE headers
 	c.Writer.Header().Set("Content-Type", "text/event-stream")
@@ -105,6 +111,12 @@ func (s *Server) Chat(c *gin.Context) {
 
 		err := s.generator.GenerateStream(ctx, req.Query, rerankedResults, provider, apiKey, model, messages,
 			func(chunk generate.StreamChunk) {
+				// Stop writing if the client already disconnected.
+				select {
+				case <-ctx.Done():
+					return
+				default:
+				}
 				fullResponse += chunk.Content
 				if len(chunk.Citations) > 0 {
 					finalCitations = chunk.Citations
@@ -137,6 +149,4 @@ func (s *Server) Chat(c *gin.Context) {
 
 		return false
 	})
-
-	_ = time.Now() // Prevent unused import
 }

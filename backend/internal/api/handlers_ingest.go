@@ -17,6 +17,9 @@ import (
 	"github.com/yamin/gophernotebook/internal/notebook"
 )
 
+// maxUploadFileSize is the per-file size cap enforced before streaming to disk.
+const maxUploadFileSize = 50 << 20 // 50 MB
+
 // Active ingestion progress channels, keyed by notebook ID.
 var (
 	progressChannels = make(map[string][]chan ingest.IngestProgress)
@@ -57,9 +60,25 @@ func (s *Server) UploadFiles(c *gin.Context) {
 	}
 
 	// Save files to disk (streaming, not loading all into RAM)
+	// Load existing sources once so deduplication check below is O(n) not O(n²).
+	existingNotebook, _ := s.nbManager.Get(notebookID)
+
 	var jobs []ingest.FileJob
 	for _, fileHeader := range files {
-		destPath := filepath.Join(uploadDir, fileHeader.Filename)
+		// filepath.Base prevents path traversal (e.g. "../../etc/passwd").
+		safeFilename := filepath.Base(fileHeader.Filename)
+		destPath := filepath.Join(uploadDir, safeFilename)
+
+		if fileHeader.Size > maxUploadFileSize {
+			log.Printf("Rejecting oversized file %s (%d bytes, limit %d)", safeFilename, fileHeader.Size, maxUploadFileSize)
+			continue
+		}
+
+		// Skip files already successfully ingested to prevent duplicate Weaviate chunks.
+		if existingNotebook != nil && isAlreadyIngested(existingNotebook.Sources, safeFilename) {
+			log.Printf("Skipping already-ingested file: %s", safeFilename)
+			continue
+		}
 
 		// Stream file to disk
 		src, err := fileHeader.Open()
@@ -85,9 +104,9 @@ func (s *Server) UploadFiles(c *gin.Context) {
 		src.Close()
 
 		// Check if file type is supported
-		ext := filepath.Ext(fileHeader.Filename)
+		ext := filepath.Ext(safeFilename)
 		if !ingest.SupportedExtensions[ext] {
-			log.Printf("Skipping unsupported file type: %s", fileHeader.Filename)
+			log.Printf("Skipping unsupported file type: %s", safeFilename)
 			continue
 		}
 
@@ -98,7 +117,7 @@ func (s *Server) UploadFiles(c *gin.Context) {
 
 		// Record source as "processing"
 		_ = s.nbManager.AddSource(notebookID, notebook.Source{
-			FileName:   fileHeader.Filename,
+			FileName:   safeFilename,
 			FileSize:   fileHeader.Size,
 			IngestedAt: time.Now(),
 			Status:     "processing",
@@ -197,6 +216,16 @@ func (s *Server) IngestProgress(c *gin.Context) {
 			return true
 		}
 	})
+}
+
+// isAlreadyIngested reports whether a file was previously ingested successfully.
+func isAlreadyIngested(sources []notebook.Source, fileName string) bool {
+	for _, s := range sources {
+		if s.FileName == fileName && s.Status == "ingested" {
+			return true
+		}
+	}
+	return false
 }
 
 // broadcastProgress sends progress to all SSE listeners for a notebook.

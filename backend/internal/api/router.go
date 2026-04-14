@@ -71,6 +71,7 @@ func (s *Server) setupRouter() {
 
 		// Chat
 		api.POST("/notebooks/:id/chat", s.Chat)
+		api.DELETE("/notebooks/:id/chat", s.ClearChatHistory)
 	}
 
 	// Health check

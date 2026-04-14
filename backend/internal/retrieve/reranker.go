@@ -7,6 +7,7 @@ import (
 	"io"
 	"net/http"
 	"sort"
+	"time"
 )
 
 // Reranker calls the llama-server /v1/rerank endpoint to rerank retrieved chunks.
@@ -39,7 +40,7 @@ func NewReranker(baseURL, model string) *Reranker {
 	return &Reranker{
 		baseURL: baseURL,
 		model:   model,
-		client:  &http.Client{},
+		client:  &http.Client{Timeout: 30 * time.Second},
 	}
 }
 

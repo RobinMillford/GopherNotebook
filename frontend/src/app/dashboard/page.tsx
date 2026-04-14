@@ -37,14 +37,17 @@ export default function Dashboard() {
   const [creating, setCreating] = useState(false);
 
   useEffect(() => {
-    loadNotebooks();
+    const controller = new AbortController();
+    loadNotebooks(controller.signal);
+    return () => controller.abort();
   }, []);
 
-  const loadNotebooks = async () => {
+  const loadNotebooks = async (signal?: AbortSignal) => {
     try {
-      const data = await fetchNotebooks();
+      const data = await fetchNotebooks(signal);
       setNotebooks(data);
-    } catch (error) {
+    } catch (error: unknown) {
+      if (error instanceof Error && error.name === "AbortError") return;
       toast.error("Failed to load notebooks");
     } finally {
       setLoading(false);

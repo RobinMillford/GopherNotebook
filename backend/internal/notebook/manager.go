@@ -64,7 +64,7 @@ func (m *Manager) Get(id string) (*NotebookDetail, error) {
 		sources = []Source{} // Graceful fallback
 	}
 
-	messages, err := m.GetMessages(id)
+	messages, err := m.loadMessages(id)
 	if err != nil {
 		messages = []Message{} // Graceful fallback
 	}
@@ -209,6 +209,13 @@ func (m *Manager) messagesFile(id string) string {
 
 // GetMessages returns the chat history for a notebook.
 func (m *Manager) GetMessages(notebookID string) ([]Message, error) {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	return m.loadMessages(notebookID)
+}
+
+// loadMessages reads the messages file from disk. Caller must hold at least a read lock.
+func (m *Manager) loadMessages(notebookID string) ([]Message, error) {
 	data, err := os.ReadFile(m.messagesFile(notebookID))
 	if err != nil {
 		if os.IsNotExist(err) {
@@ -229,7 +236,7 @@ func (m *Manager) SaveMessage(notebookID string, msg Message) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
-	messages, err := m.GetMessages(notebookID)
+	messages, err := m.loadMessages(notebookID)
 	if err != nil {
 		messages = []Message{}
 	}
@@ -299,14 +306,14 @@ func (m *Manager) saveSources(id string, sources []Source) error {
 	return os.WriteFile(m.sourcesFile(id), data, 0644)
 }
 
-// ClearChatHistory removes the messages file
+// ClearChatHistory removes the messages file for a notebook.
 func (m *Manager) ClearChatHistory(notebookID string) error {
-        m.mu.Lock()
-        defer m.mu.Unlock()
-        
-        file := m.messagesFile(notebookID)
-        if err := os.Remove(file); err != nil && !os.IsNotExist(err) {
-                return err
-        }
-        return nil
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	file := m.messagesFile(notebookID)
+	if err := os.Remove(file); err != nil && !os.IsNotExist(err) {
+		return fmt.Errorf("failed to clear chat history for %s: %w", notebookID, err)
+	}
+	return nil
 }
